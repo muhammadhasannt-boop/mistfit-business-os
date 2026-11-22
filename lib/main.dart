@@ -734,7 +734,7 @@ class _HomePageState extends State<HomePage> {
     loadWorkspace();
   }
 
-  Future<void> loadWorkspace() async {
+    Future<void> loadWorkspace() async {
     setState(() {
       loading = true;
       error = null;
@@ -748,6 +748,8 @@ class _HomePageState extends State<HomePage> {
       } catch (_) {
         // Offline mode: local app continues working.
       }
+
+      subscribeProductsRealtime();
     } catch (e) {
       error = e.toString();
     }
