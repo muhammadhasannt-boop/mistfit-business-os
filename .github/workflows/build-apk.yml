@@ -29,6 +29,16 @@ jobs:
       - name: Generate Android project
         run: flutter create --platforms=android .
 
+      - name: Ensure Android Internet permission
+        run: |
+          FILE=android/app/src/main/AndroidManifest.xml
+
+          if ! grep -q 'android.permission.INTERNET' "$FILE"; then
+            sed -i '/<application/i\    <uses-permission android:name="android.permission.INTERNET" />' "$FILE"
+          fi
+
+          grep 'android.permission.INTERNET' "$FILE"
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -41,7 +51,6 @@ jobs:
 
           if [[ ! "$SUPABASE_URL" =~ ^https://[a-zA-Z0-9-]+\.supabase\.co$ ]]; then
             echo "ERROR: Supabase URL format incorrect."
-            echo "Use only the Project URL ending in .supabase.co"
             exit 1
           fi
 
