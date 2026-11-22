@@ -15,7 +15,6 @@ Future<void> main() async {
   runApp(const MistfitApp());
 }
 
-
 final supabase = Supabase.instance.client;
 
 class BusinessContext {
@@ -57,7 +56,6 @@ final money = NumberFormat.currency(
   symbol: 'Rs. ',
   decimalDigits: 0,
 );
-
 
 class AppDb {
   AppDb._();
@@ -314,6 +312,7 @@ class _LoginPageState extends State<LoginPage> {
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
@@ -321,11 +320,75 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int tab = 0;
   int refresh = 0;
+  bool loading = true;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    loadWorkspace();
+  }
+
+  Future<void> loadWorkspace() async {
+    setState(() {
+      loading = true;
+      error = null;
+    });
+
+    try {
+      await BusinessContext.load();
+    } catch (e) {
+      error = e.toString();
+    }
+
+    if (mounted) {
+      setState(() => loading = false);
+    }
+  }
 
   void reload() => setState(() => refresh++);
 
   @override
   Widget build(BuildContext context) {
+    if (loading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (error != null) {
+      return Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cloud_off,
+                    size: 50, color: Colors.orange),
+                const SizedBox(height: 15),
+                const Text(
+                  'Workspace load nahi hua',
+                  style: TextStyle(fontSize: 18),
+                ),
+                const SizedBox(height: 10),
+                Text(error!, textAlign: TextAlign.center),
+                const SizedBox(height: 20),
+                FilledButton(
+                  onPressed: loadWorkspace,
+                  child: const Text('Retry'),
+                ),
+                TextButton(
+                  onPressed: () => supabase.auth.signOut(),
+                  child: const Text('Logout'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     final pages = [
       Dashboard(key: ValueKey('d$refresh'), onChanged: reload),
       ProductsPage(key: ValueKey('p$refresh'), onChanged: reload),
@@ -336,8 +399,10 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('MISTFIT / BUSINESS OS',
-            style: TextStyle(fontSize: 15, letterSpacing: 1.2)),
+        title: Text(
+          '${BusinessContext.businessName ?? 'MISTFIT'} / BUSINESS OS',
+          style: const TextStyle(fontSize: 14),
+        ),
         actions: [
           IconButton(
             tooltip: 'Logout',
@@ -355,19 +420,24 @@ class _HomePageState extends State<HomePage> {
           NavigationDestination(
             icon: Icon(Icons.dashboard_outlined),
             selectedIcon: Icon(Icons.dashboard),
-            label: 'Home'),
+            label: 'Home',
+          ),
           NavigationDestination(
             icon: Icon(Icons.inventory_2_outlined),
-            label: 'Products'),
+            label: 'Products',
+          ),
           NavigationDestination(
             icon: Icon(Icons.point_of_sale),
-            label: 'Sales'),
+            label: 'Sales',
+          ),
           NavigationDestination(
             icon: Icon(Icons.receipt_long),
-            label: 'Expenses'),
+            label: 'Expenses',
+          ),
           NavigationDestination(
             icon: Icon(Icons.auto_awesome),
-            label: 'AI Analyst'),
+            label: 'AI Analyst',
+          ),
         ],
       ),
     );
@@ -401,7 +471,8 @@ class Dashboard extends StatelessWidget {
               style: TextStyle(
                 color: Color(0xFFD5B36A),
                 letterSpacing: 2,
-                fontSize: 12)),
+                fontSize: 12,
+              )),
           const SizedBox(height: 14),
           GridView.count(
             shrinkWrap: true,
@@ -437,7 +508,8 @@ class Dashboard extends StatelessWidget {
                   const Divider(height: 22),
                   const Text(
                     '*Net profit = gross product profit minus recorded expenses.',
-                    style: TextStyle(color: Colors.white60, fontSize: 11)),
+                    style: TextStyle(color: Colors.white60, fontSize: 11),
+                  ),
                 ],
               ),
             ),
@@ -525,7 +597,8 @@ class ProductsPage extends StatelessWidget {
           return const EmptyState(
             icon: Icons.inventory_2_outlined,
             title: 'No products yet',
-            body: 'Apni T-shirts aur stock yahan add karein.');
+            body: 'Apni T-shirts aur stock yahan add karein.',
+          );
         }
         return ListView.builder(
           padding: const EdgeInsets.all(12),
@@ -539,7 +612,8 @@ class ProductsPage extends StatelessWidget {
                   'SKU: ${x['sku'] ?? '-'} • '
                   '${x['size'] ?? 'No size'} / ${x['color'] ?? 'No color'}\n'
                   'Cost ${money.format(x['cost'])} | '
-                  'Price ${money.format(x['price'])}'),
+                  'Price ${money.format(x['price'])}',
+                ),
                 isThreeLine: true,
                 trailing: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -676,7 +750,8 @@ class SalesPage extends StatelessWidget {
           return const EmptyState(
             icon: Icons.point_of_sale,
             title: 'No sales recorded',
-            body: 'Sale record karne par stock automatically kam hoga.');
+            body: 'Sale record karne par stock automatically kam hoga.',
+          );
         }
         return ListView(
           padding: const EdgeInsets.all(12),
@@ -777,7 +852,8 @@ class ExpensesPage extends StatelessWidget {
           return const EmptyState(
             icon: Icons.receipt_long,
             title: 'No expenses recorded',
-            body: 'Rent, packaging, marketing aur doosre kharchay add karein.');
+            body: 'Rent, packaging, marketing aur doosre kharchay add karein.',
+          );
         }
         return ListView(
           padding: const EdgeInsets.all(12),
