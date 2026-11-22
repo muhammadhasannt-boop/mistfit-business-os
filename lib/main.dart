@@ -312,6 +312,8 @@ class ProductSyncService {
   static final instance = ProductSyncService._();
 
   bool syncing = false;
+bool refreshQueued = false;
+Future<void>? _activeSync;
 
   Future<void> syncProducts() async {
     if (syncing) {
