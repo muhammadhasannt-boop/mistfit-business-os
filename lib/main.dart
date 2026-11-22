@@ -15,10 +15,49 @@ Future<void> main() async {
   runApp(const MistfitApp());
 }
 
+
 final supabase = Supabase.instance.client;
+
+class BusinessContext {
+  static String? businessId;
+  static String? businessName;
+
+  static Future<void> load() async {
+    final user = supabase.auth.currentUser;
+
+    if (user == null) {
+      throw Exception('User login nahi hai.');
+    }
+
+    final membership = await supabase
+        .from('business_members')
+        .select('business_id')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+    if (membership == null) {
+      throw Exception('MISTFIT workspace membership nahi mili.');
+    }
+
+    final id = membership['business_id'] as String;
+
+    final business = await supabase
+        .from('businesses')
+        .select('id, name')
+        .eq('id', id)
+        .single();
+
+    businessId = business['id'] as String;
+    businessName = business['name'] as String;
+  }
+}
+
 final money = NumberFormat.currency(
-  locale: 'en_PK', symbol: 'Rs. ', decimalDigits: 0,
+  locale: 'en_PK',
+  symbol: 'Rs. ',
+  decimalDigits: 0,
 );
+
 
 class AppDb {
   AppDb._();
