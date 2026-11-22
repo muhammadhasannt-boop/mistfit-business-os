@@ -449,8 +449,7 @@ class ProductSyncService {
         'cost_price': product['cost'],
         'selling_price': product['price'],
         'stock': product['stock'],
-        'created_by': userId,
-        'updated_at': DateTime.now().toIso8601String(),
+'updated_at': DateTime.now().toIso8601String(),
       };
 
       if (cloudId == null) {
