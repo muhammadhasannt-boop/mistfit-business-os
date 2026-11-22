@@ -333,7 +333,23 @@ class ProductSyncService {
       syncing = false;
     }
   }
+  
+  Future<void> refreshFromCloud() async {
+    if (syncing) return;
 
+    final businessId = BusinessContext.businessId;
+
+    if (businessId == null) return;
+
+    syncing = true;
+
+    try {
+      await _downloadProducts(businessId);
+    } finally {
+      syncing = false;
+    }
+  }
+  
   Future<void> _uploadPending(
     String businessId,
     String userId,
