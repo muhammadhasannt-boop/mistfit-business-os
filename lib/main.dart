@@ -517,16 +517,6 @@ class ProductSyncService {
 
 class MistfitApp extends StatelessWidget {
   const MistfitApp({super.key});
-
-    @override
-  void dispose() {
-    if (_productsChannel != null) {
-      supabase.removeChannel(_productsChannel!);
-      _productsChannel = null;
-    }
-
-    super.dispose();
-  }
   
   @override
   Widget build(BuildContext context) => MaterialApp(
