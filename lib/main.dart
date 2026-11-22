@@ -726,6 +726,7 @@ class _HomePageState extends State<HomePage> {
   int refresh = 0;
   bool loading = true;
   String? error;
+    RealtimeChannel? _productsChannel;
 
   @override
   void initState() {
