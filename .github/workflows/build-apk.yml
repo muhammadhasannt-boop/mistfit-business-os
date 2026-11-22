@@ -32,6 +32,41 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Validate Supabase configuration
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -e
+
+          if [[ ! "$SUPABASE_URL" =~ ^https://[a-zA-Z0-9-]+\.supabase\.co$ ]]; then
+            echo "ERROR: Supabase URL format incorrect."
+            echo "Use only the Project URL ending in .supabase.co"
+            exit 1
+          fi
+
+          if [[ -z "$SUPABASE_ANON_KEY" ]]; then
+            echo "ERROR: Supabase publishable key is missing."
+            exit 1
+          fi
+
+          echo "Supabase URL format: OK"
+          echo "Supabase key presence: OK"
+          echo "Secret values are hidden."
+
+      - name: Check Supabase connection
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          curl --silent --show-error \
+            --output /dev/null \
+            --write-out "Supabase HTTP status: %{http_code}\n" \
+            --connect-timeout 15 \
+            "$SUPABASE_URL" || {
+              echo "ERROR: Supabase host connection failed."
+              exit 1
+            }
+
       - name: Build APK
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
