@@ -316,26 +316,54 @@ bool refreshQueued = false;
 Future<void>? _activeSync;
 
   Future<void> syncProducts() async {
-    if (syncing) {
-      throw Exception('Sync already chal raha hai.');
-    }
-
-    final businessId = BusinessContext.businessId;
-    final user = supabase.auth.currentUser;
-
-    if (businessId == null || user == null) {
-      throw Exception('Workspace ya login available nahi hai.');
-    }
-
-    syncing = true;
-
-    try {
-      await _uploadPending(businessId, user.id);
-      await _downloadProducts(businessId);
-    } finally {
-      syncing = false;
-    }
+  if (syncing) {
+    throw Exception('Sync already chal raha hai.');
   }
+
+  final businessId = BusinessContext.businessId;
+  final user = supabase.auth.currentUser;
+
+  if (businessId == null || user == null) {
+    throw Exception('Workspace ya login available nahi hai.');
+  }
+
+  syncing = true;
+
+  try {
+    await _uploadPending(businessId, user.id);
+    await _downloadProducts(businessId);
+    await _processQueuedRefresh(businessId);
+  } finally {
+    syncing = false;
+  }
+}
+
+Future<void> refreshFromCloud() async {
+  final businessId = BusinessContext.businessId;
+
+  if (businessId == null) return;
+
+  if (syncing) {
+    refreshQueued = true;
+    return;
+  }
+
+  syncing = true;
+
+  try {
+    await _downloadProducts(businessId);
+    await _processQueuedRefresh(businessId);
+  } finally {
+    syncing = false;
+  }
+}
+
+Future<void> _processQueuedRefresh(String businessId) async {
+  while (refreshQueued) {
+    refreshQueued = false;
+    await _downloadProducts(businessId);
+  }
+}
   
   Future<void> refreshFromCloud() async {
     if (syncing) return;
