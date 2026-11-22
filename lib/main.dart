@@ -760,6 +760,16 @@ class _HomePageState extends State<HomePage> {
   }
 
   void reload() => setState(() => refresh++);
+    @override
+  void dispose() {
+    if (_productsChannel != null) {
+      supabase.removeChannel(_productsChannel!);
+      _productsChannel = null;
+    }
+
+    super.dispose();
+  }
+  
     void subscribeProductsRealtime() {
     final businessId = BusinessContext.businessId;
 
