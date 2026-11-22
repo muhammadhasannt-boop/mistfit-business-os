@@ -306,81 +306,107 @@ class AppDb {
 
 // PRODUCTS CLOUD SYNC
 
+
 class ProductSyncService {
   ProductSyncService._();
 
   static final instance = ProductSyncService._();
 
   bool syncing = false;
-bool refreshQueued = false;
-Future<void>? _activeSync;
+  bool refreshQueued = false;
+  Future<void>? _activeSync;
 
   Future<void> syncProducts() async {
-  if (syncing) {
-    throw Exception('Sync already chal raha hai.');
+    while (true) {
+      final active = _activeSync;
+
+      if (active != null) {
+        await active;
+        continue;
+      }
+
+      final businessId = BusinessContext.businessId;
+      final user = supabase.auth.currentUser;
+
+      if (businessId == null || user == null) {
+        throw Exception('Workspace ya login available nahi hai.');
+      }
+
+      final operation = _performSync(
+        businessId,
+        user.id,
+        upload: true,
+      );
+
+      _activeSync = operation;
+
+      try {
+        await operation;
+      } finally {
+        if (identical(_activeSync, operation)) {
+          _activeSync = null;
+        }
+      }
+
+      return;
+    }
   }
 
-  final businessId = BusinessContext.businessId;
-  final user = supabase.auth.currentUser;
-
-  if (businessId == null || user == null) {
-    throw Exception('Workspace ya login available nahi hai.');
-  }
-
-  syncing = true;
-
-  try {
-    await _uploadPending(businessId, user.id);
-    await _downloadProducts(businessId);
-    await _processQueuedRefresh(businessId);
-  } finally {
-    syncing = false;
-  }
-}
-
-Future<void> refreshFromCloud() async {
-  final businessId = BusinessContext.businessId;
-
-  if (businessId == null) return;
-
-  if (syncing) {
-    refreshQueued = true;
-    return;
-  }
-
-  syncing = true;
-
-  try {
-    await _downloadProducts(businessId);
-    await _processQueuedRefresh(businessId);
-  } finally {
-    syncing = false;
-  }
-}
-
-Future<void> _processQueuedRefresh(String businessId) async {
-  while (refreshQueued) {
-    refreshQueued = false;
-    await _downloadProducts(businessId);
-  }
-}
-  
   Future<void> refreshFromCloud() async {
-    if (syncing) return;
+    while (true) {
+      final businessId = BusinessContext.businessId;
 
-    final businessId = BusinessContext.businessId;
+      if (businessId == null) return;
 
-    if (businessId == null) return;
+      final active = _activeSync;
 
+      if (active != null) {
+        refreshQueued = true;
+        await active;
+        continue;
+      }
+
+      final operation = _performSync(
+        businessId,
+        null,
+        upload: false,
+      );
+
+      _activeSync = operation;
+
+      try {
+        await operation;
+      } finally {
+        if (identical(_activeSync, operation)) {
+          _activeSync = null;
+        }
+      }
+
+      return;
+    }
+  }
+
+  Future<void> _performSync(
+    String businessId,
+    String? userId, {
+    required bool upload,
+  }) async {
     syncing = true;
 
     try {
-      await _downloadProducts(businessId);
+      if (upload && userId != null) {
+        await _uploadPending(businessId, userId);
+      }
+
+      do {
+        refreshQueued = false;
+        await _downloadProducts(businessId);
+      } while (refreshQueued);
     } finally {
       syncing = false;
     }
   }
-  
+
   Future<void> _uploadPending(
     String businessId,
     String userId,
