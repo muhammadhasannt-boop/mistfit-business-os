@@ -760,6 +760,43 @@ class _HomePageState extends State<HomePage> {
   }
 
   void reload() => setState(() => refresh++);
+    void subscribeProductsRealtime() {
+    final businessId = BusinessContext.businessId;
+
+    if (businessId == null) return;
+
+    if (_productsChannel != null) {
+      supabase.removeChannel(_productsChannel!);
+      _productsChannel = null;
+    }
+
+    _productsChannel = supabase
+        .channel('mistfit-products-$businessId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'products',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'business_id',
+            value: businessId,
+          ),
+          callback: (payload) async {
+            if (!mounted) return;
+
+            try {
+              await ProductSyncService.instance.refreshFromCloud();
+
+              if (mounted) {
+                reload();
+              }
+            } catch (_) {
+              // Realtime refresh failed; manual sync remains available.
+            }
+          },
+        )
+        .subscribe();
+  }
 
   @override
   Widget build(BuildContext context) {
