@@ -7,11 +7,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
   await Supabase.initialize(
     url: const String.fromEnvironment('SUPABASE_URL'),
     anonKey: const String.fromEnvironment('SUPABASE_ANON_KEY'),
   );
+
   await AppDb.instance.init();
+
   runApp(const MistfitApp());
 }
 
@@ -57,52 +60,202 @@ final money = NumberFormat.currency(
   decimalDigits: 0,
 );
 
+// DATABASE
+
 class AppDb {
   AppDb._();
+
   static final instance = AppDb._();
+
   Database? db;
 
   Future<void> init() async {
-    final path = p.join(await getDatabasesPath(), 'mistfit_business.db');
-    db = await openDatabase(path, version: 1, onCreate: (d, v) async {
-      await d.execute('''CREATE TABLE products(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL, sku TEXT, size TEXT, color TEXT,
-        cost REAL NOT NULL, price REAL NOT NULL,
-        stock INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)''');
-      await d.execute('''CREATE TABLE sales(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER,
-        product_name TEXT NOT NULL, qty INTEGER NOT NULL,
-        unit_price REAL NOT NULL, unit_cost REAL NOT NULL,
-        total REAL NOT NULL, date TEXT NOT NULL)''');
-      await d.execute('''CREATE TABLE expenses(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL, category TEXT NOT NULL,
-        amount REAL NOT NULL, date TEXT NOT NULL)''');
-    });
+    final path = p.join(
+      await getDatabasesPath(),
+      'mistfit_business.db',
+    );
+
+    db = await openDatabase(
+      path,
+      version: 2,
+      onCreate: (d, v) async {
+        await d.execute('''
+          CREATE TABLE products(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sku TEXT,
+            size TEXT,
+            color TEXT,
+            cost REAL NOT NULL,
+            price REAL NOT NULL,
+            stock INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            cloud_id TEXT,
+            sync_status TEXT NOT NULL DEFAULT 'pending',
+            updated_at TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0
+          )
+        ''');
+
+        await d.execute('''
+          CREATE TABLE sales(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER,
+            product_name TEXT NOT NULL,
+            qty INTEGER NOT NULL,
+            unit_price REAL NOT NULL,
+            unit_cost REAL NOT NULL,
+            total REAL NOT NULL,
+            date TEXT NOT NULL
+          )
+        ''');
+
+        await d.execute('''
+          CREATE TABLE expenses(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            category TEXT NOT NULL,
+            amount REAL NOT NULL,
+            date TEXT NOT NULL
+          )
+        ''');
+      },
+      onUpgrade: (d, oldVersion, newVersion) async {
+        if (oldVersion < 2) {
+          await d.execute(
+            'ALTER TABLE products ADD COLUMN cloud_id TEXT',
+          );
+
+          await d.execute('''
+            ALTER TABLE products
+            ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending'
+          ''');
+
+          await d.execute(
+            'ALTER TABLE products ADD COLUMN updated_at TEXT',
+          );
+
+          await d.execute('''
+            ALTER TABLE products
+            ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0
+          ''');
+        }
+      },
+    );
   }
 
-  Future<List<Map<String, Object?>>> rows(String table) =>
-      db!.query(table, orderBy: 'id DESC');
+  Future<List<Map<String, Object?>>> rows(String table) async {
+    if (table == 'products') {
+      return db!.query(
+        table,
+        where: 'is_deleted = 0',
+        orderBy: 'id DESC',
+      );
+    }
 
-  Future<int> add(String table, Map<String, Object?> values) =>
-      db!.insert(table, values);
+    return db!.query(table, orderBy: 'id DESC');
+  }
 
-  Future<int> update(String table, int id, Map<String, Object?> values) =>
-      db!.update(table, values, where: 'id=?', whereArgs: [id]);
+  Future<int> add(
+    String table,
+    Map<String, Object?> values,
+  ) {
+    return db!.insert(table, values);
+  }
 
-  Future<int> delete(String table, int id) =>
-      db!.delete(table, where: 'id=?', whereArgs: [id]);
+  Future<int> update(
+    String table,
+    int id,
+    Map<String, Object?> values,
+  ) {
+    return db!.update(
+      table,
+      values,
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
 
-  Future<void> recordSale(Map<String, Object?> product, int qty) async {
+  Future<int> delete(String table, int id) async {
+    if (table != 'products') {
+      return db!.delete(
+        table,
+        where: 'id=?',
+        whereArgs: [id],
+      );
+    }
+
+    final product = await db!.query(
+      'products',
+      where: 'id=?',
+      whereArgs: [id],
+      limit: 1,
+    );
+
+    if (product.isEmpty) return 0;
+
+    final cloudId = product.first['cloud_id'];
+
+    if (cloudId == null) {
+      return db!.delete(
+        'products',
+        where: 'id=?',
+        whereArgs: [id],
+      );
+    }
+
+    return db!.update(
+      'products',
+      {
+        'is_deleted': 1,
+        'sync_status': 'pending',
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<int> saveProduct(
+    Map<String, Object?> values, {
+    int? id,
+  }) async {
+    final now = DateTime.now().toIso8601String();
+
+    final data = <String, Object?>{
+      ...values,
+      'sync_status': 'pending',
+      'updated_at': now,
+    };
+
+    if (id == null) {
+      data['created_at'] = now;
+      return db!.insert('products', data);
+    }
+
+    return db!.update(
+      'products',
+      data,
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> recordSale(
+    Map<String, Object?> product,
+    int qty,
+  ) async {
     await db!.transaction((txn) async {
       final id = product['id'] as int;
       final stock = product['stock'] as int;
+
       if (qty <= 0 || qty > stock) {
         throw Exception('Stock available nahi hai.');
       }
+
       final price = (product['price'] as num).toDouble();
       final cost = (product['cost'] as num).toDouble();
+
       await txn.insert('sales', {
         'product_id': id,
         'product_name': product['name'],
@@ -112,20 +265,35 @@ class AppDb {
         'total': price * qty,
         'date': DateTime.now().toIso8601String(),
       });
-      await txn.update('products', {'stock': stock - qty},
-          where: 'id=?', whereArgs: [id]);
+
+      await txn.update(
+        'products',
+        {
+          'stock': stock - qty,
+          'sync_status': 'pending',
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id=?',
+        whereArgs: [id],
+      );
     });
   }
 
   Future<Map<String, double>> totals() async {
     final s = await db!.rawQuery(
       'SELECT COALESCE(SUM(total),0) revenue, '
-      'COALESCE(SUM((unit_price-unit_cost)*qty),0) gross FROM sales');
+      'COALESCE(SUM((unit_price-unit_cost)*qty),0) gross '
+      'FROM sales',
+    );
+
     final e = await db!.rawQuery(
-      'SELECT COALESCE(SUM(amount),0) expenses FROM expenses');
+      'SELECT COALESCE(SUM(amount),0) expenses FROM expenses',
+    );
+
     final revenue = (s.first['revenue'] as num).toDouble();
     final gross = (s.first['gross'] as num).toDouble();
     final expenses = (e.first['expenses'] as num).toDouble();
+
     return {
       'revenue': revenue,
       'gross': gross,
@@ -134,6 +302,202 @@ class AppDb {
     };
   }
 }
+
+// PRODUCTS CLOUD SYNC
+
+class ProductSyncService {
+  ProductSyncService._();
+
+  static final instance = ProductSyncService._();
+
+  bool syncing = false;
+
+  Future<void> syncProducts() async {
+    if (syncing) {
+      throw Exception('Sync already chal raha hai.');
+    }
+
+    final businessId = BusinessContext.businessId;
+    final user = supabase.auth.currentUser;
+
+    if (businessId == null || user == null) {
+      throw Exception('Workspace ya login available nahi hai.');
+    }
+
+    syncing = true;
+
+    try {
+      await _uploadPending(businessId, user.id);
+      await _downloadProducts(businessId);
+    } finally {
+      syncing = false;
+    }
+  }
+
+  Future<void> _uploadPending(
+    String businessId,
+    String userId,
+  ) async {
+    final pending = await AppDb.instance.db!.query(
+      'products',
+      where: "sync_status = 'pending'",
+      orderBy: 'id ASC',
+    );
+
+    for (final product in pending) {
+      final localId = product['id'] as int;
+      final cloudId = product['cloud_id'] as String?;
+      final deleted = (product['is_deleted'] as int?) == 1;
+
+      if (deleted) {
+        if (cloudId != null) {
+          await supabase
+              .from('products')
+              .delete()
+              .eq('id', cloudId)
+              .eq('business_id', businessId);
+        }
+
+        await AppDb.instance.db!.delete(
+          'products',
+          where: 'id=?',
+          whereArgs: [localId],
+        );
+
+        continue;
+      }
+
+      final payload = <String, dynamic>{
+        'business_id': businessId,
+        'name': product['name'],
+        'sku': product['sku'],
+        'size': product['size'],
+        'color': product['color'],
+        'cost_price': product['cost'],
+        'selling_price': product['price'],
+        'stock': product['stock'],
+        'created_by': userId,
+        'updated_at': DateTime.now().toIso8601String(),
+      };
+
+      if (cloudId == null) {
+        final inserted = await supabase
+            .from('products')
+            .insert(payload)
+            .select('id')
+            .single();
+
+        await AppDb.instance.db!.update(
+          'products',
+          {
+            'cloud_id': inserted['id'],
+            'sync_status': 'synced',
+          },
+          where: 'id=?',
+          whereArgs: [localId],
+        );
+      } else {
+        final updated = await supabase
+            .from('products')
+            .update(payload)
+            .eq('id', cloudId)
+            .eq('business_id', businessId)
+            .select('id')
+            .maybeSingle();
+
+        if (updated == null) {
+          final inserted = await supabase
+              .from('products')
+              .insert(payload)
+              .select('id')
+              .single();
+
+          await AppDb.instance.db!.update(
+            'products',
+            {
+              'cloud_id': inserted['id'],
+              'sync_status': 'synced',
+            },
+            where: 'id=?',
+            whereArgs: [localId],
+          );
+        } else {
+          await AppDb.instance.db!.update(
+            'products',
+            {'sync_status': 'synced'},
+            where: 'id=?',
+            whereArgs: [localId],
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _downloadProducts(String businessId) async {
+    final cloudProducts = await supabase
+        .from('products')
+        .select(
+          'id, business_id, name, sku, size, color, '
+          'cost_price, selling_price, stock, created_by, updated_at',
+        )
+        .eq('business_id', businessId);
+
+    for (final item in cloudProducts) {
+      final cloud = Map<String, dynamic>.from(item as Map);
+      final cloudId = cloud['id'] as String;
+
+      final local = await AppDb.instance.db!.query(
+        'products',
+        where: 'cloud_id=?',
+        whereArgs: [cloudId],
+        limit: 1,
+      );
+
+      final values = <String, Object?>{
+        'name': cloud['name'],
+        'sku': cloud['sku'],
+        'size': cloud['size'],
+        'color': cloud['color'],
+        'cost': (cloud['cost_price'] as num).toDouble(),
+        'price': (cloud['selling_price'] as num).toDouble(),
+        'stock': (cloud['stock'] as num).toInt(),
+        'updated_at': cloud['updated_at']?.toString(),
+      };
+
+      if (local.isNotEmpty) {
+        final existing = local.first;
+
+        if (existing['sync_status'] == 'pending') {
+          continue;
+        }
+
+        await AppDb.instance.db!.update(
+          'products',
+          {
+            ...values,
+            'sync_status': 'synced',
+            'is_deleted': 0,
+          },
+          where: 'id=?',
+          whereArgs: [existing['id']],
+        );
+      } else {
+        await AppDb.instance.db!.insert(
+          'products',
+          {
+            ...values,
+            'cloud_id': cloudId,
+            'created_at': DateTime.now().toIso8601String(),
+            'sync_status': 'synced',
+            'is_deleted': 0,
+          },
+        );
+      }
+    }
+  }
+}
+
+// APP
 
 class MistfitApp extends StatelessWidget {
   const MistfitApp({super.key});
@@ -188,8 +552,11 @@ class AuthGate extends StatelessWidget {
       );
 }
 
+// LOGIN
+
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
+
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
@@ -197,6 +564,7 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final email = TextEditingController();
   final password = TextEditingController();
+
   bool loading = false;
   bool hidePassword = true;
   String? error;
@@ -206,10 +574,12 @@ class _LoginPageState extends State<LoginPage> {
       setState(() => error = 'Email aur password enter karein.');
       return;
     }
+
     setState(() {
       loading = true;
       error = null;
     });
+
     try {
       await supabase.auth.signInWithPassword(
         email: email.text.trim(),
@@ -241,21 +611,28 @@ class _LoginPageState extends State<LoginPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.storefront,
-                  size: 65, color: Color(0xFFD5B36A)),
+              const Icon(
+                Icons.storefront,
+                size: 65,
+                color: Color(0xFFD5B36A),
+              ),
               const SizedBox(height: 18),
-              const Text('MISTFIT',
-                  style: TextStyle(
-                    fontSize: 30,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 4,
-                  )),
+              const Text(
+                'MISTFIT',
+                style: TextStyle(
+                  fontSize: 30,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 4,
+                ),
+              ),
               const SizedBox(height: 6),
-              const Text('BUSINESS OS',
-                  style: TextStyle(
-                    color: Color(0xFFD5B36A),
-                    letterSpacing: 3,
-                  )),
+              const Text(
+                'BUSINESS OS',
+                style: TextStyle(
+                  color: Color(0xFFD5B36A),
+                  letterSpacing: 3,
+                ),
+              ),
               const SizedBox(height: 38),
               TextField(
                 controller: email,
@@ -276,17 +653,21 @@ class _LoginPageState extends State<LoginPage> {
                   suffixIcon: IconButton(
                     onPressed: () =>
                         setState(() => hidePassword = !hidePassword),
-                    icon: Icon(hidePassword
-                        ? Icons.visibility_outlined
-                        : Icons.visibility_off_outlined),
+                    icon: Icon(
+                      hidePassword
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined,
+                    ),
                   ),
                 ),
               ),
               if (error != null) ...[
                 const SizedBox(height: 14),
-                Text(error!,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.redAccent)),
+                Text(
+                  error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
               ],
               const SizedBox(height: 22),
               SizedBox(
@@ -300,8 +681,13 @@ class _LoginPageState extends State<LoginPage> {
                 ),
               ),
               const SizedBox(height: 20),
-              const Text('MISTFIT team members only',
-                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              const Text(
+                'MISTFIT team members only',
+                style: TextStyle(
+                  color: Colors.white54,
+                  fontSize: 12,
+                ),
+              ),
             ],
           ),
         ),
@@ -309,6 +695,8 @@ class _LoginPageState extends State<LoginPage> {
     ),
   );
 }
+
+// HOME
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -337,6 +725,12 @@ class _HomePageState extends State<HomePage> {
 
     try {
       await BusinessContext.load();
+
+      try {
+        await ProductSyncService.instance.syncProducts();
+      } catch (_) {
+        // Offline mode: local app continues working.
+      }
     } catch (e) {
       error = e.toString();
     }
@@ -364,8 +758,11 @@ class _HomePageState extends State<HomePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.cloud_off,
-                    size: 50, color: Colors.orange),
+                const Icon(
+                  Icons.cloud_off,
+                  size: 50,
+                  color: Colors.orange,
+                ),
                 const SizedBox(height: 15),
                 const Text(
                   'Workspace load nahi hua',
@@ -390,10 +787,22 @@ class _HomePageState extends State<HomePage> {
     }
 
     final pages = [
-      Dashboard(key: ValueKey('d$refresh'), onChanged: reload),
-      ProductsPage(key: ValueKey('p$refresh'), onChanged: reload),
-      SalesPage(key: ValueKey('s$refresh'), onChanged: reload),
-      ExpensesPage(key: ValueKey('e$refresh'), onChanged: reload),
+      Dashboard(
+        key: ValueKey('d$refresh'),
+        onChanged: reload,
+      ),
+      ProductsPage(
+        key: ValueKey('p$refresh'),
+        onChanged: reload,
+      ),
+      SalesPage(
+        key: ValueKey('s$refresh'),
+        onChanged: reload,
+      ),
+      ExpensesPage(
+        key: ValueKey('e$refresh'),
+        onChanged: reload,
+      ),
       const AnalystPage(),
     ];
 
@@ -444,9 +853,15 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+// DASHBOARD
+
 class Dashboard extends StatelessWidget {
   final VoidCallback onChanged;
-  const Dashboard({super.key, required this.onChanged});
+
+  const Dashboard({
+    super.key,
+    required this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) => FutureBuilder(
@@ -459,20 +874,26 @@ class Dashboard extends StatelessWidget {
       if (!snap.hasData) {
         return const Center(child: CircularProgressIndicator());
       }
+
       final t = snap.data![0] as Map<String, double>;
       final products = snap.data![1] as List<Map<String, Object?>>;
       final sales = snap.data![2] as List<Map<String, Object?>>;
-      final low = products.where((x) => (x['stock'] as int) <= 5).length;
+
+      final low = products
+          .where((x) => (x['stock'] as int) <= 5)
+          .length;
 
       return ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('BUSINESS OVERVIEW',
-              style: TextStyle(
-                color: Color(0xFFD5B36A),
-                letterSpacing: 2,
-                fontSize: 12,
-              )),
+          const Text(
+            'BUSINESS OVERVIEW',
+            style: TextStyle(
+              color: Color(0xFFD5B36A),
+              letterSpacing: 2,
+              fontSize: 12,
+            ),
+          ),
           const SizedBox(height: 14),
           GridView.count(
             shrinkWrap: true,
@@ -482,14 +903,22 @@ class Dashboard extends StatelessWidget {
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
             children: [
-              Metric('Revenue', money.format(t['revenue']),
-                  Icons.trending_up),
-              Metric('Gross profit', money.format(t['gross']),
-                  Icons.account_balance_wallet),
-              Metric('Expenses', money.format(t['expenses']),
-                  Icons.payments_outlined),
-              Metric('Net profit*', money.format(t['net']),
-                  Icons.insights),
+              Metric('Revenue', money.format(t['revenue']), Icons.trending_up),
+              Metric(
+                'Gross profit',
+                money.format(t['gross']),
+                Icons.account_balance_wallet,
+              ),
+              Metric(
+                'Expenses',
+                money.format(t['expenses']),
+                Icons.payments_outlined,
+              ),
+              Metric(
+                'Net profit*',
+                money.format(t['net']),
+                Icons.insights,
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -499,8 +928,10 @@ class Dashboard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('BUSINESS SNAPSHOT',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const Text(
+                    'BUSINESS SNAPSHOT',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                   const SizedBox(height: 12),
                   InfoLine('Products listed', '${products.length}'),
                   InfoLine('Sales recorded', '${sales.length}'),
@@ -508,7 +939,10 @@ class Dashboard extends StatelessWidget {
                   const Divider(height: 22),
                   const Text(
                     '*Net profit = gross product profit minus recorded expenses.',
-                    style: TextStyle(color: Colors.white60, fontSize: 11),
+                    style: TextStyle(
+                      color: Colors.white60,
+                      fontSize: 11,
+                    ),
                   ),
                 ],
               ),
@@ -530,8 +964,10 @@ class Dashboard extends StatelessWidget {
 }
 
 class Metric extends StatelessWidget {
-  final String title, value;
+  final String title;
+  final String value;
   final IconData icon;
+
   const Metric(this.title, this.value, this.icon, {super.key});
 
   @override
@@ -542,12 +978,27 @@ class Metric extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Icon(icon, color: const Color(0xFFD5B36A), size: 20),
-          Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontWeight: FontWeight.bold, fontSize: 17)),
-          Text(title,
-              style: const TextStyle(color: Colors.white60, fontSize: 11)),
+          Icon(
+            icon,
+            color: const Color(0xFFD5B36A),
+            size: 20,
+          ),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 17,
+            ),
+          ),
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white60,
+              fontSize: 11,
+            ),
+          ),
         ],
       ),
     ),
@@ -555,7 +1006,9 @@ class Metric extends StatelessWidget {
 }
 
 class InfoLine extends StatelessWidget {
-  final String a, b;
+  final String a;
+  final String b;
+
   const InfoLine(this.a, this.b, {super.key});
 
   @override
@@ -571,9 +1024,47 @@ class InfoLine extends StatelessWidget {
   );
 }
 
+// PRODUCTS
+
 class ProductsPage extends StatelessWidget {
   final VoidCallback onChanged;
-  const ProductsPage({super.key, required this.onChanged});
+
+  const ProductsPage({
+    super.key,
+    required this.onChanged,
+  });
+
+  Future<void> syncNow(BuildContext context) async {
+    if (ProductSyncService.instance.syncing) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Products sync ho rahe hain...')),
+    );
+
+    try {
+      await ProductSyncService.instance.syncProducts();
+
+      onChanged();
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Products successfully sync ho gaye!'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Sync nahi hua: ${e.toString().replaceAll('Exception: ', '')}',
+            ),
+          ),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -586,109 +1077,184 @@ class ProductsPage extends StatelessWidget {
       icon: const Icon(Icons.add),
       label: const Text('Add product'),
     ),
-    body: FutureBuilder(
-      future: AppDb.instance.rows('products'),
-      builder: (c, s) {
-        if (!s.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        final items = s.data!;
-        if (items.isEmpty) {
-          return const EmptyState(
-            icon: Icons.inventory_2_outlined,
-            title: 'No products yet',
-            body: 'Apni T-shirts aur stock yahan add karein.',
-          );
-        }
-        return ListView.builder(
-          padding: const EdgeInsets.all(12),
-          itemCount: items.length,
-          itemBuilder: (c, i) {
-            final x = items[i];
-            return Card(
-              child: ListTile(
-                title: Text('${x['name']}'),
-                subtitle: Text(
-                  'SKU: ${x['sku'] ?? '-'} • '
-                  '${x['size'] ?? 'No size'} / ${x['color'] ?? 'No color'}\n'
-                  'Cost ${money.format(x['cost'])} | '
-                  'Price ${money.format(x['price'])}',
-                ),
-                isThreeLine: true,
-                trailing: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text('${x['stock']}',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 18)),
-                    const Text('stock',
-                        style: TextStyle(
-                          fontSize: 10, color: Colors.white60)),
-                  ],
-                ),
-                onTap: () async {
-                  await showProductForm(context, existing: x);
-                  onChanged();
+    body: Column(
+      children: [
+        Align(
+          alignment: Alignment.centerRight,
+          child: Padding(
+            padding: const EdgeInsets.only(right: 12, top: 8),
+            child: OutlinedButton.icon(
+              onPressed: ProductSyncService.instance.syncing
+                  ? null
+                  : () => syncNow(context),
+              icon: const Icon(Icons.sync),
+              label: const Text('Sync products'),
+            ),
+          ),
+        ),
+        Expanded(
+          child: FutureBuilder(
+            future: AppDb.instance.rows('products'),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) {
+                return const Center(
+                  child: CircularProgressIndicator(),
+                );
+              }
+
+              final items = snapshot.data!;
+
+              if (items.isEmpty) {
+                return const EmptyState(
+                  icon: Icons.inventory_2_outlined,
+                  title: 'No products yet',
+                  body: 'Apni T-shirts aur stock yahan add karein.',
+                );
+              }
+
+              return ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: items.length,
+                itemBuilder: (context, i) {
+                  final x = items[i];
+
+                  return Card(
+                    child: ListTile(
+                      title: Text('${x['name']}'),
+                      subtitle: Text(
+                        'SKU: ${x['sku'] ?? '-'} • '
+                        '${x['size'] ?? 'No size'} / '
+                        '${x['color'] ?? 'No color'}\n'
+                        'Cost ${money.format(x['cost'])} | '
+                        'Price ${money.format(x['price'])}',
+                      ),
+                      isThreeLine: true,
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '${x['stock']}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                            ),
+                          ),
+                          const Text(
+                            'stock',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.white60,
+                            ),
+                          ),
+                        ],
+                      ),
+                      onTap: () async {
+                        await showProductForm(
+                          context,
+                          existing: x,
+                        );
+                        onChanged();
+                      },
+                    ),
+                  );
                 },
-              ),
-            );
-          },
-        );
-      },
+              );
+            },
+          ),
+        ),
+      ],
     ),
   );
 }
 
 Future<void> showProductForm(
-  BuildContext context, {Map<String, Object?>? existing}
-) async {
-  final name = TextEditingController(text: existing?['name'] as String? ?? '');
-  final sku = TextEditingController(text: existing?['sku'] as String? ?? '');
-  final size = TextEditingController(text: existing?['size'] as String? ?? '');
-  final color = TextEditingController(text: existing?['color'] as String? ?? '');
+  BuildContext context, {
+  Map<String, Object?>? existing,
+}) async {
+  final name = TextEditingController(
+    text: existing?['name'] as String? ?? '',
+  );
+
+  final sku = TextEditingController(
+    text: existing?['sku'] as String? ?? '',
+  );
+
+  final size = TextEditingController(
+    text: existing?['size'] as String? ?? '',
+  );
+
+  final color = TextEditingController(
+    text: existing?['color'] as String? ?? '',
+  );
+
   final cost = TextEditingController(
-      text: existing == null ? '' : '${existing['cost']}');
+    text: existing == null ? '' : '${existing['cost']}',
+  );
+
   final price = TextEditingController(
-      text: existing == null ? '' : '${existing['price']}');
+    text: existing == null ? '' : '${existing['price']}',
+  );
+
   final stock = TextEditingController(
-      text: existing == null ? '0' : '${existing['stock']}');
+    text: existing == null ? '0' : '${existing['stock']}',
+  );
 
   await showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(existing == null ? 'Add product' : 'Edit product'),
       content: SingleChildScrollView(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          field(name, 'Product name'),
-          field(sku, 'SKU / code'),
-          field(size, 'Size (S, M, L, XL)'),
-          field(color, 'Color'),
-          field(cost, 'Unit cost (Rs.)', numeric: true),
-          field(price, 'Selling price (Rs.)', numeric: true),
-          field(stock, 'Opening stock', numeric: true),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            field(name, 'Product name'),
+            field(sku, 'SKU / code'),
+            field(size, 'Size (S, M, L, XL)'),
+            field(color, 'Color'),
+            field(cost, 'Unit cost (Rs.)', numeric: true),
+            field(price, 'Selling price (Rs.)', numeric: true),
+            field(stock, 'Opening stock', numeric: true),
+          ],
+        ),
       ),
       actions: [
         if (existing != null)
           TextButton(
             onPressed: () async {
-              await AppDb.instance.delete('products', existing['id'] as int);
+              await AppDb.instance.delete(
+                'products',
+                existing['id'] as int,
+              );
+
+              try {
+                await ProductSyncService.instance.syncProducts();
+              } catch (_) {}
+
               if (ctx.mounted) Navigator.pop(ctx);
             },
-            child: const Text('Delete')),
+            child: const Text('Delete'),
+          ),
         TextButton(
           onPressed: () => Navigator.pop(ctx),
-          child: const Text('Cancel')),
+          child: const Text('Cancel'),
+        ),
         FilledButton(
           onPressed: () async {
             final n = double.tryParse(cost.text);
             final pr = double.tryParse(price.text);
             final st = int.tryParse(stock.text);
-            if (name.text.trim().isEmpty ||
-                n == null || pr == null || st == null ||
-                n < 0 || pr < 0 || st < 0) return;
 
-            final values = {
+            if (name.text.trim().isEmpty ||
+                n == null ||
+                pr == null ||
+                st == null ||
+                n < 0 ||
+                pr < 0 ||
+                st < 0) {
+              return;
+            }
+
+            final values = <String, Object?>{
               'name': name.text.trim(),
               'sku': sku.text.trim(),
               'size': size.text.trim(),
@@ -696,24 +1262,41 @@ Future<void> showProductForm(
               'cost': n,
               'price': pr,
               'stock': st,
-              'created_at': DateTime.now().toIso8601String(),
             };
 
-            if (existing == null) {
-              await AppDb.instance.add('products', values);
-            } else {
-              await AppDb.instance.update(
-                  'products', existing['id'] as int, values);
+            await AppDb.instance.saveProduct(
+              values,
+              id: existing?['id'] as int?,
+            );
+
+            try {
+              await ProductSyncService.instance.syncProducts();
+            } catch (_) {
+              // Local save remains safe if cloud is unavailable.
             }
+
             if (ctx.mounted) Navigator.pop(ctx);
           },
-          child: const Text('Save')),
+          child: const Text('Save'),
+        ),
       ],
     ),
   );
+
+  name.dispose();
+  sku.dispose();
+  size.dispose();
+  color.dispose();
+  cost.dispose();
+  price.dispose();
+  stock.dispose();
 }
 
-Widget field(TextEditingController c, String label, {bool numeric = false}) =>
+Widget field(
+  TextEditingController c,
+  String label, {
+  bool numeric = false,
+}) =>
     Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: TextField(
@@ -725,9 +1308,15 @@ Widget field(TextEditingController c, String label, {bool numeric = false}) =>
       ),
     );
 
+// SALES
+
 class SalesPage extends StatelessWidget {
   final VoidCallback onChanged;
-  const SalesPage({super.key, required this.onChanged});
+
+  const SalesPage({
+    super.key,
+    required this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -742,26 +1331,33 @@ class SalesPage extends StatelessWidget {
     ),
     body: FutureBuilder(
       future: AppDb.instance.rows('sales'),
-      builder: (c, s) {
-        if (!s.hasData) {
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
-        if (s.data!.isEmpty) {
+
+        if (snapshot.data!.isEmpty) {
           return const EmptyState(
             icon: Icons.point_of_sale,
             title: 'No sales recorded',
             body: 'Sale record karne par stock automatically kam hoga.',
           );
         }
+
         return ListView(
           padding: const EdgeInsets.all(12),
-          children: s.data!.map((x) => Card(
+          children: snapshot.data!.map((x) => Card(
             child: ListTile(
               title: Text('${x['product_name']} × ${x['qty']}'),
-              subtitle: Text(DateFormat('dd MMM yyyy, hh:mm a').format(
-                  DateTime.parse(x['date'] as String))),
-              trailing: Text(money.format(x['total']),
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text(
+                DateFormat('dd MMM yyyy, hh:mm a').format(
+                  DateTime.parse(x['date'] as String),
+                ),
+              ),
+              trailing: Text(
+                money.format(x['total']),
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           )).toList(),
         );
@@ -772,10 +1368,13 @@ class SalesPage extends StatelessWidget {
 
 Future<void> showSaleForm(BuildContext context) async {
   final products = await AppDb.instance.rows('products');
+
   if (!context.mounted) return;
+
   if (products.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Pehle product add karein.')));
+      const SnackBar(content: Text('Pehle product add karein.')),
+    );
     return;
   }
 
@@ -787,49 +1386,77 @@ Future<void> showSaleForm(BuildContext context) async {
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, set) => AlertDialog(
         title: const Text('Record sale'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          DropdownButtonFormField<int>(
-            value: selected,
-            isExpanded: true,
-            items: products.map((x) => DropdownMenuItem(
-              value: x['id'] as int,
-              child: Text('${x['name']} (stock ${x['stock']})',
-                  overflow: TextOverflow.ellipsis),
-            )).toList(),
-            onChanged: (v) {
-              if (v != null) set(() => selected = v);
-            },
-          ),
-          const SizedBox(height: 12),
-          field(qty, 'Quantity', numeric: true),
-        ]),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DropdownButtonFormField<int>(
+              value: selected,
+              isExpanded: true,
+              items: products.map((x) => DropdownMenuItem(
+                value: x['id'] as int,
+                child: Text(
+                  '${x['name']} (stock ${x['stock']})',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              )).toList(),
+              onChanged: (v) {
+                if (v != null) set(() => selected = v);
+              },
+            ),
+            const SizedBox(height: 12),
+            field(qty, 'Quantity', numeric: true),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel')),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () async {
-              final product = products.firstWhere((x) => x['id'] == selected);
+              final product = products.firstWhere(
+                (x) => x['id'] == selected,
+              );
+
               final q = int.tryParse(qty.text) ?? 0;
+
               try {
                 await AppDb.instance.recordSale(product, q);
+
+                try {
+                  await ProductSyncService.instance.syncProducts();
+                } catch (_) {}
+
                 if (ctx.mounted) Navigator.pop(ctx);
               } catch (e) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(
-                    e.toString().replaceAll('Exception: ', ''))));
+                  SnackBar(
+                    content: Text(
+                      e.toString().replaceAll('Exception: ', ''),
+                    ),
+                  ),
+                );
               }
             },
-            child: const Text('Save sale')),
+            child: const Text('Save sale'),
+          ),
         ],
       ),
     ),
   );
+
+  qty.dispose();
 }
+
+// EXPENSES
 
 class ExpensesPage extends StatelessWidget {
   final VoidCallback onChanged;
-  const ExpensesPage({super.key, required this.onChanged});
+
+  const ExpensesPage({
+    super.key,
+    required this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -844,25 +1471,30 @@ class ExpensesPage extends StatelessWidget {
     ),
     body: FutureBuilder(
       future: AppDb.instance.rows('expenses'),
-      builder: (c, s) {
-        if (!s.hasData) {
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
         }
-        if (s.data!.isEmpty) {
+
+        if (snapshot.data!.isEmpty) {
           return const EmptyState(
             icon: Icons.receipt_long,
             title: 'No expenses recorded',
             body: 'Rent, packaging, marketing aur doosre kharchay add karein.',
           );
         }
+
         return ListView(
           padding: const EdgeInsets.all(12),
-          children: s.data!.map((x) => Card(
+          children: snapshot.data!.map((x) => Card(
             child: ListTile(
               title: Text('${x['title']}'),
               subtitle: Text(
-                '${x['category']} • ${DateFormat('dd MMM yyyy').format(
-                    DateTime.parse(x['date'] as String))}'),
+                '${x['category']} • '
+                '${DateFormat('dd MMM yyyy').format(
+                  DateTime.parse(x['date'] as String),
+                )}',
+              ),
               trailing: Text(money.format(x['amount'])),
             ),
           )).toList(),
@@ -875,6 +1507,7 @@ class ExpensesPage extends StatelessWidget {
 Future<void> showExpenseForm(BuildContext context) async {
   final title = TextEditingController();
   final amount = TextEditingController();
+
   String category = 'Operations';
 
   await showDialog(
@@ -882,42 +1515,65 @@ Future<void> showExpenseForm(BuildContext context) async {
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, set) => AlertDialog(
         title: const Text('Add expense'),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          field(title, 'Expense title'),
-          field(amount, 'Amount (Rs.)', numeric: true),
-          DropdownButtonFormField<String>(
-            value: category,
-            items: [
-              'Operations', 'Packaging', 'Marketing', 'Rent',
-              'Salary', 'Delivery', 'Other'
-            ].map((x) => DropdownMenuItem(value: x, child: Text(x))).toList(),
-            onChanged: (v) {
-              if (v != null) set(() => category = v);
-            },
-          ),
-        ]),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            field(title, 'Expense title'),
+            field(amount, 'Amount (Rs.)', numeric: true),
+            DropdownButtonFormField<String>(
+              value: category,
+              items: [
+                'Operations',
+                'Packaging',
+                'Marketing',
+                'Rent',
+                'Salary',
+                'Delivery',
+                'Other',
+              ].map((x) => DropdownMenuItem(
+                value: x,
+                child: Text(x),
+              )).toList(),
+              onChanged: (v) {
+                if (v != null) set(() => category = v);
+              },
+            ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel')),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             onPressed: () async {
               final a = double.tryParse(amount.text);
-              if (title.text.trim().isEmpty || a == null || a <= 0) return;
+
+              if (title.text.trim().isEmpty || a == null || a <= 0) {
+                return;
+              }
+
               await AppDb.instance.add('expenses', {
                 'title': title.text.trim(),
                 'category': category,
                 'amount': a,
                 'date': DateTime.now().toIso8601String(),
               });
+
               if (ctx.mounted) Navigator.pop(ctx);
             },
-            child: const Text('Save')),
+            child: const Text('Save'),
+          ),
         ],
       ),
     ),
   );
+
+  title.dispose();
+  amount.dispose();
 }
+
+// ANALYST
 
 class AnalystPage extends StatelessWidget {
   const AnalystPage({super.key});
@@ -929,17 +1585,24 @@ class AnalystPage extends StatelessWidget {
       AppDb.instance.rows('products'),
       AppDb.instance.rows('sales'),
     ]),
-    builder: (c, s) {
-      if (!s.hasData) {
+    builder: (context, snapshot) {
+      if (!snapshot.hasData) {
         return const Center(child: CircularProgressIndicator());
       }
 
-      final t = s.data![0] as Map<String, double>;
-      final products = s.data![1] as List<Map<String, Object?>>;
-      final sales = s.data![2] as List<Map<String, Object?>>;
-      final low = products.where((x) => (x['stock'] as int) <= 5).toList();
+      final t = snapshot.data![0] as Map<String, double>;
+      final products =
+          snapshot.data![1] as List<Map<String, Object?>>;
+      final sales =
+          snapshot.data![2] as List<Map<String, Object?>>;
+
+      final low = products
+          .where((x) => (x['stock'] as int) <= 5)
+          .toList();
+
       final loss = products.where(
-        (x) => (x['price'] as num) <= (x['cost'] as num)).toList();
+        (x) => (x['price'] as num) <= (x['cost'] as num),
+      ).toList();
 
       final insights = <Widget>[];
 
@@ -948,64 +1611,86 @@ class AnalystPage extends StatelessWidget {
           icon: Icons.info_outline,
           title: 'Data needed',
           body: 'Products add karne ke baad analysis hoga.',
-          warning: false));
+          warning: false,
+        ));
       }
+
       if (low.isNotEmpty) {
         insights.add(Insight(
           icon: Icons.warning_amber,
           title: 'Low stock alert',
           body: '${low.length} product(s) ka stock 5 ya us se kam hai.',
-          warning: true));
+          warning: true,
+        ));
       }
+
       if (loss.isNotEmpty) {
         insights.add(Insight(
           icon: Icons.trending_down,
           title: 'Pricing alert',
           body: '${loss.length} product(s) ki selling price cost se zyada nahi.',
-          warning: true));
+          warning: true,
+        ));
       }
+
       if (sales.isEmpty) {
         insights.add(const Insight(
           icon: Icons.bar_chart,
           title: 'Sales trend unavailable',
           body: 'Sales records add karna zaroori hai.',
-          warning: false));
+          warning: false,
+        ));
       }
+
       if (sales.isNotEmpty && t['net']! < 0) {
         insights.add(const Insight(
           icon: Icons.error_outline,
           title: 'Recorded costs exceed gross profit',
           body: 'Recorded expenses aur pricing review karein.',
-          warning: true));
+          warning: true,
+        ));
       }
+
       if (insights.isEmpty) {
         insights.add(const Insight(
           icon: Icons.check_circle_outline,
           title: 'No rule-based warning found',
           body: 'Configured checks ke mutabiq warning nahi mili.',
-          warning: false));
+          warning: false,
+        ));
       }
 
       return ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('MISTFIT AI ANALYST',
-              style: TextStyle(
-                color: Color(0xFFD5B36A),
-                letterSpacing: 2,
-                fontWeight: FontWeight.bold)),
+          const Text(
+            'MISTFIT AI ANALYST',
+            style: TextStyle(
+              color: Color(0xFFD5B36A),
+              letterSpacing: 2,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           const SizedBox(height: 8),
-          const Text('Offline rule-based business checks',
-              style: TextStyle(color: Colors.white60)),
+          const Text(
+            'Offline rule-based business checks',
+            style: TextStyle(color: Colors.white60),
+          ),
           const SizedBox(height: 14),
           ...insights,
           const SizedBox(height: 12),
-          const Text('Analysis limits',
-              style: TextStyle(fontWeight: FontWeight.bold)),
+          const Text(
+            'Analysis limits',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
           const Text(
             'Ye basic offline analysis hai, trained generative AI nahi. '
             'Suggestions saved records aur built-in rules par based hain.',
-            style: TextStyle(color: Colors.white60, fontSize: 12)),
+            style: TextStyle(
+              color: Colors.white60,
+              fontSize: 12,
+            ),
+          ),
         ],
       );
     },
@@ -1014,7 +1699,8 @@ class AnalystPage extends StatelessWidget {
 
 class Insight extends StatelessWidget {
   final IconData icon;
-  final String title, body;
+  final String title;
+  final String body;
   final bool warning;
 
   const Insight({
@@ -1032,19 +1718,29 @@ class Insight extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: warning
-              ? Colors.orangeAccent : const Color(0xFFD5B36A)),
+          Icon(
+            icon,
+            color: warning
+                ? Colors.orangeAccent
+                : const Color(0xFFD5B36A),
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 5),
-                Text(body,
-                    style: const TextStyle(
-                      color: Colors.white70, fontSize: 13)),
+                Text(
+                  body,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 13,
+                  ),
+                ),
               ],
             ),
           ),
@@ -1054,9 +1750,12 @@ class Insight extends StatelessWidget {
   );
 }
 
+// EMPTY STATE
+
 class EmptyState extends StatelessWidget {
   final IconData icon;
-  final String title, body;
+  final String title;
+  final String body;
 
   const EmptyState({
     super.key,
@@ -1072,15 +1771,25 @@ class EmptyState extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 52, color: const Color(0xFFD5B36A)),
+          Icon(
+            icon,
+            size: 52,
+            color: const Color(0xFFD5B36A),
+          ),
           const SizedBox(height: 14),
-          Text(title,
-              style: const TextStyle(
-                fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           const SizedBox(height: 8),
-          Text(body,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white60)),
+          Text(
+            body,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white60),
+          ),
         ],
       ),
     ),
