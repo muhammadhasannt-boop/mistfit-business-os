@@ -844,9 +844,18 @@ class _HomePageState extends State<HomePage> {
   bool _autoSyncRunning = false;
   bool _autoSyncQueued = false;
   
-  @override
+    @override
   void initState() {
     super.initState();
+
+    WidgetsBinding.instance.addObserver(this);
+
+    _connectivitySubscription =
+        Connectivity().onConnectivityChanged.listen(
+      _handleConnectivityChanged,
+      onError: (_) {},
+    );
+
     loadWorkspace();
   }
 
