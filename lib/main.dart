@@ -887,43 +887,36 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
   
-    void subscribeProductsRealtime() {
-    final businessId = BusinessContext.businessId;
+    
+void subscribeProductsRealtime() {
+  final businessId = BusinessContext.businessId;
 
-    if (businessId == null) return;
+  if (businessId == null) return;
 
-    if (_productsChannel != null) {
-      supabase.removeChannel(_productsChannel!);
-      _productsChannel = null;
-    }
+  _productsChannel?.unsubscribe();
 
-    _productsChannel = supabase
-        .channel('mistfit-products-$businessId')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'products',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'business_id',
-            value: businessId,
-          ),
-          callback: (payload) async {
-            if (!mounted) return;
+  _productsChannel = supabase
+      .channel('mistfit-products-$businessId')
+      .onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'products',
+        callback: (payload) async {
+          if (!mounted) return;
 
-            try {
-              await ProductSyncService.instance.refreshFromCloud();
+          try {
+            await ProductSyncService.instance.refreshFromCloud();
 
-              if (mounted) {
-                reload();
-              }
-            } catch (_) {
-              // Realtime refresh failed; manual sync remains available.
+            if (mounted) {
+              reload();
             }
-          },
-        )
-        .subscribe();
-  }
+          } catch (e) {
+            // Manual sync remains available if realtime refresh fails.
+          }
+        },
+      )
+      .subscribe();
+}
 
   @override
   Widget build(BuildContext context) {
