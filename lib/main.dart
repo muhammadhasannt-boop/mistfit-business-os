@@ -858,7 +858,65 @@ class _HomePageState extends State<HomePage> {
 
     loadWorkspace();
   }
+ 
+  void _handleConnectivityChanged(
+    List<ConnectivityResult> results,
+  ) {
+    final online = results.any(
+      (result) => result != ConnectivityResult.none,
+    );
 
+    if (online) {
+      unawaited(_syncWhenOnline());
+    }
+  }
+
+  Future<void> _syncWhenOnline() async {
+    if (!mounted ||
+        BusinessContext.businessId == null ||
+        supabase.auth.currentUser == null) {
+      return;
+    }
+
+    if (_autoSyncRunning) {
+      _autoSyncQueued = true;
+      return;
+    }
+
+    _autoSyncRunning = true;
+
+    try {
+      final results = await Connectivity().checkConnectivity();
+
+      final online = results.any(
+        (result) => result != ConnectivityResult.none,
+      );
+
+      if (!online) return;
+
+      await ProductSyncService.instance.syncProducts();
+
+      if (mounted) {
+        reload();
+      }
+    } catch (_) {
+      // Internet ya cloud unavailable ho to pending changes local rahengi.
+    } finally {
+      _autoSyncRunning = false;
+
+      if (_autoSyncQueued && mounted) {
+        _autoSyncQueued = false;
+        unawaited(_syncWhenOnline());
+      }
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_syncWhenOnline());
+    }
+  }
     Future<void> loadWorkspace() async {
   if (!mounted) return;
 
