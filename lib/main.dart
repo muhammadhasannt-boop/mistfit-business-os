@@ -838,7 +838,12 @@ class _HomePageState extends State<HomePage> {
   bool loading = true;
   String? error;
     RealtimeChannel? _productsChannel;
+  StreamSubscription<List<ConnectivityResult>>?
+      _connectivitySubscription;
 
+  bool _autoSyncRunning = false;
+  bool _autoSyncQueued = false;
+  
   @override
   void initState() {
     super.initState();
