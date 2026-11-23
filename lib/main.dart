@@ -846,29 +846,36 @@ class _HomePageState extends State<HomePage> {
   }
 
     Future<void> loadWorkspace() async {
-    setState(() {
-      loading = true;
-      error = null;
-    });
+  if (!mounted) return;
+
+  setState(() {
+    loading = true;
+    error = null;
+  });
+
+  try {
+    await BusinessContext.load();
+
+    if (!mounted) return;
 
     try {
-      await BusinessContext.load();
-
-      try {
-        await ProductSyncService.instance.syncProducts();
-      } catch (_) {
-        // Offline mode: local app continues working.
-      }
-
-      subscribeProductsRealtime();
-    } catch (e) {
-      error = e.toString();
+      await ProductSyncService.instance.syncProducts();
+    } catch (_) {
+      // Offline mode: local app continues working.
     }
 
-    if (mounted) {
-      setState(() => loading = false);
-    }
+    if (!mounted) return;
+
+    subscribeProductsRealtime();
+  } catch (e) {
+    if (!mounted) return;
+    error = e.toString();
   }
+
+  if (mounted) {
+    setState(() => loading = false);
+  }
+}
 
   void reload() => setState(() => refresh++);
     @override
