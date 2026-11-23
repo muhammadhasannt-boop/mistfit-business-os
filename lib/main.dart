@@ -79,7 +79,7 @@ class AppDb {
 
     db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (d, v) async {
         await d.execute('''
           CREATE TABLE products(
