@@ -121,6 +121,25 @@ class AppDb {
             date TEXT NOT NULL
           )
         ''');
+
+await d.execute('''
+  CREATE TABLE expenses(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amount REAL NOT NULL,
+    date TEXT NOT NULL
+  )
+''');
+
+await d.execute('''
+  CREATE TABLE app_settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )
+''');
+      },
+        
       },
       onUpgrade: (d, oldVersion, newVersion) async {
         if (oldVersion < 2) {
