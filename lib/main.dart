@@ -515,8 +515,8 @@ class ProductSyncService {
     var offset = 0;
 
     final cloudIds = <String>{};
-    var receivedAnyProducts = false;
 
+    // Cloud products download with stable pagination.
     while (true) {
       final cloudProducts = await supabase
           .from('products')
@@ -525,13 +525,12 @@ class ProductSyncService {
             'cost_price, selling_price, stock, created_by, updated_at',
           )
           .eq('business_id', businessId)
+          .order('id')
           .range(offset, offset + pageSize - 1);
 
       if (cloudProducts.isEmpty) {
         break;
       }
-
-      receivedAnyProducts = true;
 
       for (final item in cloudProducts) {
         final cloud = Map<String, dynamic>.from(item);
@@ -560,6 +559,7 @@ class ProductSyncService {
         if (local.isNotEmpty) {
           final existing = local.first;
 
+          // Local pending changes must not be overwritten.
           if (existing['sync_status'] == 'pending') {
             continue;
           }
@@ -595,29 +595,28 @@ class ProductSyncService {
       offset += pageSize;
     }
 
-    // Cloud se delete hue synced products ko local se remove karo.
-    // Pending aur unsynced local products ko touch nahi karna.
+    // Reconcile only after the complete cloud download succeeds.
+    // This also handles an empty cloud list (zero products).
+    // Pending, deleted-pending and unsynced local products are protected.
 
-    if (receivedAnyProducts) {
-      final localCloudProducts = await AppDb.instance.db!.query(
-        'products',
-        columns: ['id', 'cloud_id'],
-        where: "cloud_id IS NOT NULL "
-            "AND sync_status = 'synced' "
-            "AND is_deleted = 0",
-      );
+    final localCloudProducts = await AppDb.instance.db!.query(
+      'products',
+      columns: ['id', 'cloud_id'],
+      where: "cloud_id IS NOT NULL "
+          "AND sync_status = 'synced' "
+          "AND is_deleted = 0",
+    );
 
-      for (final local in localCloudProducts) {
-        final localCloudId = local['cloud_id'] as String?;
+    for (final local in localCloudProducts) {
+      final localCloudId = local['cloud_id'] as String?;
 
-        if (localCloudId != null &&
-            !cloudIds.contains(localCloudId)) {
-          await AppDb.instance.db!.delete(
-            'products',
-            where: 'id=?',
-            whereArgs: [local['id']],
-          );
-        }
+      if (localCloudId != null &&
+          !cloudIds.contains(localCloudId)) {
+        await AppDb.instance.db!.delete(
+          'products',
+          where: 'id=?',
+          whereArgs: [local['id']],
+        );
       }
     }
   }
