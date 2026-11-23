@@ -306,7 +306,6 @@ class AppDb {
 
 // PRODUCTS CLOUD SYNC
 
-
 class ProductSyncService {
   ProductSyncService._();
 
@@ -449,13 +448,16 @@ class ProductSyncService {
         'cost_price': product['cost'],
         'selling_price': product['price'],
         'stock': product['stock'],
-'updated_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
       };
 
       if (cloudId == null) {
         final inserted = await supabase
             .from('products')
-            .insert(payload)
+            .insert({
+              ...payload,
+              'created_by': userId,
+            })
             .select('id')
             .single();
 
@@ -480,7 +482,10 @@ class ProductSyncService {
         if (updated == null) {
           final inserted = await supabase
               .from('products')
-              .insert(payload)
+              .insert({
+                ...payload,
+                'created_by': userId,
+              })
               .select('id')
               .single();
 
@@ -506,68 +511,118 @@ class ProductSyncService {
   }
 
   Future<void> _downloadProducts(String businessId) async {
-    final cloudProducts = await supabase
-        .from('products')
-        .select(
-          'id, business_id, name, sku, size, color, '
-          'cost_price, selling_price, stock, created_by, updated_at',
-        )
-        .eq('business_id', businessId);
+    const pageSize = 500;
+    var offset = 0;
 
-    for (final item in cloudProducts) {
-      final cloud = Map<String, dynamic>.from(item as Map);
-      final cloudId = cloud['id'] as String;
+    final cloudIds = <String>{};
+    var receivedAnyProducts = false;
 
-      final local = await AppDb.instance.db!.query(
+    while (true) {
+      final cloudProducts = await supabase
+          .from('products')
+          .select(
+            'id, business_id, name, sku, size, color, '
+            'cost_price, selling_price, stock, created_by, updated_at',
+          )
+          .eq('business_id', businessId)
+          .range(offset, offset + pageSize - 1);
+
+      if (cloudProducts.isEmpty) {
+        break;
+      }
+
+      receivedAnyProducts = true;
+
+      for (final item in cloudProducts) {
+        final cloud = Map<String, dynamic>.from(item);
+        final cloudId = cloud['id'] as String;
+
+        cloudIds.add(cloudId);
+
+        final local = await AppDb.instance.db!.query(
+          'products',
+          where: 'cloud_id=?',
+          whereArgs: [cloudId],
+          limit: 1,
+        );
+
+        final values = <String, Object?>{
+          'name': cloud['name'],
+          'sku': cloud['sku'],
+          'size': cloud['size'],
+          'color': cloud['color'],
+          'cost': (cloud['cost_price'] as num).toDouble(),
+          'price': (cloud['selling_price'] as num).toDouble(),
+          'stock': (cloud['stock'] as num).toInt(),
+          'updated_at': cloud['updated_at']?.toString(),
+        };
+
+        if (local.isNotEmpty) {
+          final existing = local.first;
+
+          if (existing['sync_status'] == 'pending') {
+            continue;
+          }
+
+          await AppDb.instance.db!.update(
+            'products',
+            {
+              ...values,
+              'sync_status': 'synced',
+              'is_deleted': 0,
+            },
+            where: 'id=?',
+            whereArgs: [existing['id']],
+          );
+        } else {
+          await AppDb.instance.db!.insert(
+            'products',
+            {
+              ...values,
+              'cloud_id': cloudId,
+              'created_at': DateTime.now().toIso8601String(),
+              'sync_status': 'synced',
+              'is_deleted': 0,
+            },
+          );
+        }
+      }
+
+      if (cloudProducts.length < pageSize) {
+        break;
+      }
+
+      offset += pageSize;
+    }
+
+    // Cloud se delete hue synced products ko local se remove karo.
+    // Pending aur unsynced local products ko touch nahi karna.
+
+    if (receivedAnyProducts) {
+      final localCloudProducts = await AppDb.instance.db!.query(
         'products',
-        where: 'cloud_id=?',
-        whereArgs: [cloudId],
-        limit: 1,
+        columns: ['id', 'cloud_id'],
+        where: "cloud_id IS NOT NULL "
+            "AND sync_status = 'synced' "
+            "AND is_deleted = 0",
       );
 
-      final values = <String, Object?>{
-        'name': cloud['name'],
-        'sku': cloud['sku'],
-        'size': cloud['size'],
-        'color': cloud['color'],
-        'cost': (cloud['cost_price'] as num).toDouble(),
-        'price': (cloud['selling_price'] as num).toDouble(),
-        'stock': (cloud['stock'] as num).toInt(),
-        'updated_at': cloud['updated_at']?.toString(),
-      };
+      for (final local in localCloudProducts) {
+        final localCloudId = local['cloud_id'] as String?;
 
-      if (local.isNotEmpty) {
-        final existing = local.first;
-
-        if (existing['sync_status'] == 'pending') {
-          continue;
+        if (localCloudId != null &&
+            !cloudIds.contains(localCloudId)) {
+          await AppDb.instance.db!.delete(
+            'products',
+            where: 'id=?',
+            whereArgs: [local['id']],
+          );
         }
-
-        await AppDb.instance.db!.update(
-          'products',
-          {
-            ...values,
-            'sync_status': 'synced',
-            'is_deleted': 0,
-          },
-          where: 'id=?',
-          whereArgs: [existing['id']],
-        );
-      } else {
-        await AppDb.instance.db!.insert(
-          'products',
-          {
-            ...values,
-            'cloud_id': cloudId,
-            'created_at': DateTime.now().toIso8601String(),
-            'sync_status': 'synced',
-            'is_deleted': 0,
-          },
-        );
       }
     }
   }
 }
+
 
 // APP
 
