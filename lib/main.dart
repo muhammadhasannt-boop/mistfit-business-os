@@ -944,8 +944,12 @@ class _HomePageState extends State<HomePage> {
     error = e.toString();
   }
 
-  if (mounted) {
+    if (mounted) {
     setState(() => loading = false);
+
+    if (error == null) {
+      unawaited(_syncWhenOnline());
+    }
   }
 }
 
