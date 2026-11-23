@@ -954,8 +954,17 @@ class _HomePageState extends State<HomePage> {
 }
 
   void reload() => setState(() => refresh++);
-    @override
+      @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+
+    final subscription = _connectivitySubscription;
+    _connectivitySubscription = null;
+
+    if (subscription != null) {
+      unawaited(subscription.cancel());
+    }
+
     if (_productsChannel != null) {
       supabase.removeChannel(_productsChannel!);
       _productsChannel = null;
