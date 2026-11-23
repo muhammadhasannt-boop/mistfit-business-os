@@ -825,6 +825,7 @@ class _LoginPageState extends State<LoginPage> {
 
 // HOME
 
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -832,19 +833,22 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage>
+    with WidgetsBindingObserver {
   int tab = 0;
   int refresh = 0;
   bool loading = true;
   String? error;
-    RealtimeChannel? _productsChannel;
+
+  RealtimeChannel? _productsChannel;
+
   StreamSubscription<List<ConnectivityResult>>?
       _connectivitySubscription;
 
   bool _autoSyncRunning = false;
   bool _autoSyncQueued = false;
-  
-    @override
+
+  @override
   void initState() {
     super.initState();
 
@@ -858,7 +862,7 @@ class _HomePageState extends State<HomePage> {
 
     loadWorkspace();
   }
- 
+
   void _handleConnectivityChanged(
     List<ConnectivityResult> results,
   ) {
@@ -900,7 +904,7 @@ class _HomePageState extends State<HomePage> {
         reload();
       }
     } catch (_) {
-      // Internet ya cloud unavailable ho to pending changes local rahengi.
+      // Cloud unavailable ho to local pending changes safe rahengi.
     } finally {
       _autoSyncRunning = false;
 
@@ -917,44 +921,49 @@ class _HomePageState extends State<HomePage> {
       unawaited(_syncWhenOnline());
     }
   }
-    Future<void> loadWorkspace() async {
-  if (!mounted) return;
 
-  setState(() {
-    loading = true;
-    error = null;
-  });
-
-  try {
-    await BusinessContext.load();
-
+  Future<void> loadWorkspace() async {
     if (!mounted) return;
+
+    setState(() {
+      loading = true;
+      error = null;
+    });
 
     try {
-      await ProductSyncService.instance.syncProducts();
-    } catch (_) {
-      // Offline mode: local app continues working.
+      await BusinessContext.load();
+
+      if (!mounted) return;
+
+      try {
+        await ProductSyncService.instance.syncProducts();
+      } catch (_) {
+        // Offline mode: local app continues working.
+      }
+
+      if (!mounted) return;
+
+      subscribeProductsRealtime();
+    } catch (e) {
+      if (!mounted) return;
+      error = e.toString();
     }
-
-    if (!mounted) return;
-
-    subscribeProductsRealtime();
-  } catch (e) {
-    if (!mounted) return;
-    error = e.toString();
-  }
 
     if (mounted) {
-    setState(() => loading = false);
+      setState(() => loading = false);
 
-    if (error == null) {
-      unawaited(_syncWhenOnline());
+      if (error == null) {
+        unawaited(_syncWhenOnline());
+      }
     }
   }
-}
 
-  void reload() => setState(() => refresh++);
-      @override
+  void reload() {
+    if (!mounted) return;
+    setState(() => refresh++);
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
 
@@ -972,37 +981,36 @@ class _HomePageState extends State<HomePage> {
 
     super.dispose();
   }
-  
-    
-void subscribeProductsRealtime() {
-  final businessId = BusinessContext.businessId;
 
-  if (businessId == null) return;
+  void subscribeProductsRealtime() {
+    final businessId = BusinessContext.businessId;
 
-  _productsChannel?.unsubscribe();
+    if (businessId == null) return;
 
-  _productsChannel = supabase
-      .channel('mistfit-products-$businessId')
-      .onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'products',
-        callback: (payload) async {
-          if (!mounted) return;
+    _productsChannel?.unsubscribe();
 
-          try {
-            await ProductSyncService.instance.refreshFromCloud();
+    _productsChannel = supabase
+        .channel('mistfit-products-$businessId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'products',
+          callback: (payload) async {
+            if (!mounted) return;
 
-            if (mounted) {
-              reload();
+            try {
+              await ProductSyncService.instance.refreshFromCloud();
+
+              if (mounted) {
+                reload();
+              }
+            } catch (_) {
+              // Manual sync remains available.
             }
-          } catch (e) {
-            // Manual sync remains available if realtime refresh fails.
-          }
-        },
-      )
-      .subscribe();
-}
+          },
+        )
+        .subscribe();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1114,6 +1122,7 @@ void subscribeProductsRealtime() {
     );
   }
 }
+
 
 // DASHBOARD
 
