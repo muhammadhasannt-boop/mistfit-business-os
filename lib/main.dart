@@ -161,6 +161,16 @@ await d.execute('''
             ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0
           ''');
         }
+
+if (oldVersion < 3) {
+  await d.execute('''
+    CREATE TABLE IF NOT EXISTS app_settings(
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  ''');
+}
+        
       },
     );
   }
