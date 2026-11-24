@@ -372,42 +372,70 @@ Future<String?> getSetting(String key) async {
   }
 
   Future<void> recordSale(
-    Map<String, Object?> product,
-    int qty,
-  ) async {
-    await db!.transaction((txn) async {
-      final id = product['id'] as int;
-      final stock = product['stock'] as int;
+  Map<String, Object?> product,
+  int qty,
+) async {
+  await db!.transaction((txn) async {
+    final id = product['id'] as int;
 
-      if (qty <= 0 || qty > stock) {
-        throw Exception('Stock available nahi hai.');
-      }
+    if (qty <= 0) {
+      throw Exception('Quantity valid nahi hai.');
+    }
 
-      final price = (product['price'] as num).toDouble();
-      final cost = (product['cost'] as num).toDouble();
+    // Transaction ke andar product ka fresh record lo.
+    final results = await txn.query(
+      'products',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
 
-      await txn.insert('sales', {
-        'product_id': id,
-        'product_name': product['name'],
-        'qty': qty,
-        'unit_price': price,
-        'unit_cost': cost,
-        'total': price * qty,
-        'date': DateTime.now().toIso8601String(),
-      });
+    if (results.isEmpty) {
+      throw Exception('Product ab available nahi hai.');
+    }
 
-      await txn.update(
-        'products',
-        {
-          'stock': stock - qty,
-          'sync_status': 'pending',
-          'updated_at': DateTime.now().toIso8601String(),
-        },
-        where: 'id=?',
-        whereArgs: [id],
-      );
+    final freshProduct = results.first;
+
+    if (freshProduct['is_deleted'] == 1) {
+      throw Exception('Ye product delete ho chuka hai.');
+    }
+
+    final stock = (freshProduct['stock'] as num).toInt();
+
+    if (qty > stock) {
+      throw Exception('Stock available nahi hai. Available stock: $stock');
+    }
+
+    final price = (freshProduct['price'] as num).toDouble();
+    final cost = (freshProduct['cost'] as num).toDouble();
+    final now = DateTime.now().toIso8601String();
+
+    await txn.insert('sales', {
+      'product_id': id,
+      'product_name': freshProduct['name'],
+      'qty': qty,
+      'unit_price': price,
+      'unit_cost': cost,
+      'total': price * qty,
+      'date': now,
     });
-  }
+
+    final updatedRows = await txn.update(
+      'products',
+      {
+        'stock': stock - qty,
+        'sync_status': 'pending',
+        'updated_at': now,
+      },
+      where: 'id = ? AND stock = ? AND is_deleted = 0',
+      whereArgs: [id, stock],
+    );
+
+    if (updatedRows != 1) {
+      throw Exception('Stock update nahi ho saka. Dobara try karo.');
+    }
+  });
+}
 
   Future<Map<String, double>> totals() async {
     final s = await db!.rawQuery(
