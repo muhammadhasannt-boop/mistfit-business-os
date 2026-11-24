@@ -464,6 +464,7 @@ Future<String?> getSetting(String key) async {
 
 // PRODUCTS CLOUD SYNC
 
+
 class ProductSyncService {
   ProductSyncService._();
 
@@ -564,20 +565,139 @@ class ProductSyncService {
     }
   }
 
+  // Compare current local record with the exact version
+  // that was selected for upload.
+  bool _sameLocalVersion(
+    Map<String, Object?> current,
+    Map<String, Object?> snapshot,
+  ) {
+    const fields = [
+      'name',
+      'sku',
+      'size',
+      'color',
+      'cost',
+      'price',
+      'stock',
+      'cloud_id',
+      'sync_status',
+      'updated_at',
+      'is_deleted',
+    ];
+
+    for (final field in fields) {
+      if (current[field] != snapshot[field]) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  // Attach a newly created cloud ID without overwriting
+  // any newer local edits.
+  Future<void> _attachInsertedCloudId(
+    int localId,
+    Map<String, Object?> snapshot,
+    String newCloudId,
+    String businessId,
+  ) async {
+    final db = AppDb.instance.db!;
+
+    var localRowExists = false;
+
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: [localId],
+        limit: 1,
+      );
+
+      if (rows.isEmpty) return;
+
+      final current = rows.first;
+
+      if (current['cloud_id'] != snapshot['cloud_id']) {
+        return;
+      }
+
+      localRowExists = true;
+
+      final unchanged = _sameLocalVersion(
+        current,
+        snapshot,
+      );
+
+      await txn.update(
+        'products',
+        {
+          'cloud_id': newCloudId,
+          'sync_status': unchanged ? 'synced' : 'pending',
+        },
+        where: 'id = ? AND cloud_id IS ?',
+        whereArgs: [localId, snapshot['cloud_id']],
+      );
+    });
+
+    // If the local product was deleted while the cloud insert
+    // was running, remove the newly created cloud record.
+    if (!localRowExists) {
+      await supabase
+          .from('products')
+          .delete()
+          .eq('id', newCloudId)
+          .eq('business_id', businessId);
+    }
+  }
+
+  Future<void> _markSyncedIfUnchanged(
+    int localId,
+    Map<String, Object?> snapshot,
+  ) async {
+    final db = AppDb.instance.db!;
+
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: [localId],
+        limit: 1,
+      );
+
+      if (rows.isEmpty) return;
+
+      if (!_sameLocalVersion(rows.first, snapshot)) {
+        return;
+      }
+
+      await txn.update(
+        'products',
+        {'sync_status': 'synced'},
+        where: 'id = ? AND sync_status = ?',
+        whereArgs: [localId, 'pending'],
+      );
+    });
+  }
+
   Future<void> _uploadPending(
     String businessId,
     String userId,
   ) async {
-    final pending = await AppDb.instance.db!.query(
+    final db = AppDb.instance.db!;
+
+    final pending = await db.query(
       'products',
       where: "sync_status = 'pending'",
       orderBy: 'id ASC',
     );
 
     for (final product in pending) {
-      final localId = product['id'] as int;
-      final cloudId = product['cloud_id'] as String?;
-      final deleted = (product['is_deleted'] as int?) == 1;
+      final snapshot = Map<String, Object?>.from(product);
+
+      final localId = snapshot['id'] as int;
+      final cloudId = snapshot['cloud_id'] as String?;
+      final deleted = (snapshot['is_deleted'] as int?) == 1;
 
       if (deleted) {
         if (cloudId != null) {
@@ -588,24 +708,39 @@ class ProductSyncService {
               .eq('business_id', businessId);
         }
 
-        await AppDb.instance.db!.delete(
-          'products',
-          where: 'id=?',
-          whereArgs: [localId],
-        );
+        // Delete locally only if this is still the same
+        // pending deletion that we originally selected.
+        await db.transaction((txn) async {
+          final rows = await txn.query(
+            'products',
+            where: 'id = ?',
+            whereArgs: [localId],
+            limit: 1,
+          );
+
+          if (rows.isEmpty) return;
+
+          if (_sameLocalVersion(rows.first, snapshot)) {
+            await txn.delete(
+              'products',
+              where: 'id = ?',
+              whereArgs: [localId],
+            );
+          }
+        });
 
         continue;
       }
 
       final payload = <String, dynamic>{
         'business_id': businessId,
-        'name': product['name'],
-        'sku': product['sku'],
-        'size': product['size'],
-        'color': product['color'],
-        'cost_price': product['cost'],
-        'selling_price': product['price'],
-        'stock': product['stock'],
+        'name': snapshot['name'],
+        'sku': snapshot['sku'],
+        'size': snapshot['size'],
+        'color': snapshot['color'],
+        'cost_price': snapshot['cost'],
+        'selling_price': snapshot['price'],
+        'stock': snapshot['stock'],
         'updated_at': DateTime.now().toIso8601String(),
       };
 
@@ -619,14 +754,11 @@ class ProductSyncService {
             .select('id')
             .single();
 
-        await AppDb.instance.db!.update(
-          'products',
-          {
-            'cloud_id': inserted['id'],
-            'sync_status': 'synced',
-          },
-          where: 'id=?',
-          whereArgs: [localId],
+        await _attachInsertedCloudId(
+          localId,
+          snapshot,
+          inserted['id'].toString(),
+          businessId,
         );
       } else {
         final updated = await supabase
@@ -647,21 +779,16 @@ class ProductSyncService {
               .select('id')
               .single();
 
-          await AppDb.instance.db!.update(
-            'products',
-            {
-              'cloud_id': inserted['id'],
-              'sync_status': 'synced',
-            },
-            where: 'id=?',
-            whereArgs: [localId],
+          await _attachInsertedCloudId(
+            localId,
+            snapshot,
+            inserted['id'].toString(),
+            businessId,
           );
         } else {
-          await AppDb.instance.db!.update(
-            'products',
-            {'sync_status': 'synced'},
-            where: 'id=?',
-            whereArgs: [localId],
+          await _markSyncedIfUnchanged(
+            localId,
+            snapshot,
           );
         }
       }
@@ -673,8 +800,9 @@ class ProductSyncService {
     var offset = 0;
 
     final cloudIds = <String>{};
+    final db = AppDb.instance.db!;
 
-    // Cloud products download with stable pagination.
+    // Download cloud products using pagination.
     while (true) {
       final cloudProducts = await supabase
           .from('products')
@@ -692,16 +820,9 @@ class ProductSyncService {
 
       for (final item in cloudProducts) {
         final cloud = Map<String, dynamic>.from(item);
-        final cloudId = cloud['id'] as String;
+        final cloudId = cloud['id'].toString();
 
         cloudIds.add(cloudId);
-
-        final local = await AppDb.instance.db!.query(
-          'products',
-          where: 'cloud_id=?',
-          whereArgs: [cloudId],
-          limit: 1,
-        );
 
         final values = <String, Object?>{
           'name': cloud['name'],
@@ -714,36 +835,60 @@ class ProductSyncService {
           'updated_at': cloud['updated_at']?.toString(),
         };
 
-        if (local.isNotEmpty) {
-          final existing = local.first;
+        await db.transaction((txn) async {
+          final local = await txn.query(
+            'products',
+            where: 'cloud_id = ?',
+            whereArgs: [cloudId],
+            limit: 1,
+          );
 
-          // Local pending changes must not be overwritten.
-          if (existing['sync_status'] == 'pending') {
-            continue;
+          if (local.isNotEmpty) {
+            final existing = local.first;
+
+            // Never overwrite local pending edits or deletions.
+            if (existing['sync_status'] == 'pending' ||
+                existing['is_deleted'] == 1) {
+              return;
+            }
+
+            await txn.update(
+              'products',
+              {
+                ...values,
+                'sync_status': 'synced',
+                'is_deleted': 0,
+              },
+              where: 'id = ? '
+                  "AND sync_status = 'synced' "
+                  'AND is_deleted = 0',
+              whereArgs: [existing['id']],
+            );
+          } else {
+            // Check again inside the transaction to avoid
+            // inserting a duplicate cloud ID.
+            final duplicate = await txn.query(
+              'products',
+              columns: ['id'],
+              where: 'cloud_id = ?',
+              whereArgs: [cloudId],
+              limit: 1,
+            );
+
+            if (duplicate.isNotEmpty) return;
+
+            await txn.insert(
+              'products',
+              {
+                ...values,
+                'cloud_id': cloudId,
+                'created_at': DateTime.now().toIso8601String(),
+                'sync_status': 'synced',
+                'is_deleted': 0,
+              },
+            );
           }
-
-          await AppDb.instance.db!.update(
-            'products',
-            {
-              ...values,
-              'sync_status': 'synced',
-              'is_deleted': 0,
-            },
-            where: 'id=?',
-            whereArgs: [existing['id']],
-          );
-        } else {
-          await AppDb.instance.db!.insert(
-            'products',
-            {
-              ...values,
-              'cloud_id': cloudId,
-              'created_at': DateTime.now().toIso8601String(),
-              'sync_status': 'synced',
-              'is_deleted': 0,
-            },
-          );
-        }
+        });
       }
 
       if (cloudProducts.length < pageSize) {
@@ -753,11 +898,9 @@ class ProductSyncService {
       offset += pageSize;
     }
 
-    // Reconcile only after the complete cloud download succeeds.
-    // This also handles an empty cloud list (zero products).
-    // Pending, deleted-pending and unsynced local products are protected.
-
-    final localCloudProducts = await AppDb.instance.db!.query(
+    // Reconcile local synced products only after the entire
+    // cloud download has completed successfully.
+    final localCloudProducts = await db.query(
       'products',
       columns: ['id', 'cloud_id'],
       where: "cloud_id IS NOT NULL "
@@ -766,16 +909,24 @@ class ProductSyncService {
     );
 
     for (final local in localCloudProducts) {
+      final localId = local['id'] as int;
       final localCloudId = local['cloud_id'] as String?;
 
-      if (localCloudId != null &&
-          !cloudIds.contains(localCloudId)) {
-        await AppDb.instance.db!.delete(
-          'products',
-          where: 'id=?',
-          whereArgs: [local['id']],
-        );
+      if (localCloudId == null ||
+          cloudIds.contains(localCloudId)) {
+        continue;
       }
+
+      // Conditional delete protects a product that became
+      // pending after the reconciliation query.
+      await db.delete(
+        'products',
+        where: 'id = ? '
+            'AND cloud_id = ? '
+            "AND sync_status = 'synced' "
+            'AND is_deleted = 0',
+        whereArgs: [localId, localCloudId],
+      );
     }
   }
 }
