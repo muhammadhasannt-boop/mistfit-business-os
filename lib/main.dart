@@ -110,6 +110,7 @@ class BusinessContext {
   // Network connection failed.
   await _loadCachedWorkspace(db, user.id);
 }
+  }
 
   static Future<void> _loadCachedWorkspace(
     AppDb db,
