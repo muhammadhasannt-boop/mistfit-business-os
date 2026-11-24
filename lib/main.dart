@@ -1,4 +1,4 @@
-
+import 'dart:io';
 import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +22,7 @@ Future<void> main() async {
 
 final supabase = Supabase.instance.client;
 
+
 class BusinessContext {
   static String? businessId;
   static String? businessName;
@@ -38,7 +39,7 @@ class BusinessContext {
     final db = AppDb.instance;
 
     try {
-      // 1. Get user's workspace membership from Supabase.
+      // 1. Get user's workspace membership.
       final membership = await Supabase.instance.client
           .from('business_members')
           .select('business_id')
@@ -47,7 +48,7 @@ class BusinessContext {
 
       if (membership == null ||
           membership['business_id'] == null) {
-       throw StateError(
+        throw StateError(
           'No business workspace is linked to this account.',
         );
       }
@@ -92,42 +93,50 @@ class BusinessContext {
       // 4. Update active workspace.
       businessId = remoteBusinessId;
       businessName = remoteBusinessName;
-          } on StateError {
+    } on StateError {
       rethrow;
     } on PostgrestException {
-      // Do not use cached workspace when Supabase
-      // reports a database or permission error.
+      // Database and permission errors must not
+      // silently fall back to cached workspace.
       rethrow;
-    } catch (error) {
-      // 5. If online loading fails, try local cache.
-      final cachedUserId =
-          await db.getSetting('business_user_id');
-
-      final cachedBusinessId =
-          await db.getSetting('business_id');
-
-      final cachedBusinessName =
-          await db.getSetting('business_name');
-
-      // Never load another account's cached workspace.
-      if (cachedUserId != user.id ||
-          cachedBusinessId == null ||
-          cachedBusinessId.isEmpty ||
-          cachedBusinessName == null ||
-          cachedBusinessName.isEmpty) {
-        throw Exception(
-          'Workspace could not be loaded. '
-          'Please connect to the internet and try again. '
-          'Details: $error',
-        );
-      }
-
-      businessId = cachedBusinessId;
-      businessName = cachedBusinessName;
+    } on IOException {
+      // Network / connection-related I/O failure.
+      await _loadCachedWorkspace(db, user.id);
+    } on TimeoutException {
+      // Request timed out.
+      await _loadCachedWorkspace(db, user.id);
     }
   }
-}
 
+  static Future<void> _loadCachedWorkspace(
+    AppDb db,
+    String userId,
+  ) async {
+    final cachedUserId =
+        await db.getSetting('business_user_id');
+
+    final cachedBusinessId =
+        await db.getSetting('business_id');
+
+    final cachedBusinessName =
+        await db.getSetting('business_name');
+
+    // Never load another account's cached workspace.
+    if (cachedUserId != userId ||
+        cachedBusinessId == null ||
+        cachedBusinessId.isEmpty ||
+        cachedBusinessName == null ||
+        cachedBusinessName.isEmpty) {
+      throw Exception(
+        'Workspace could not be loaded. '
+        'Please connect to the internet and try again.',
+      );
+    }
+
+    businessId = cachedBusinessId;
+    businessName = cachedBusinessName;
+  }
+}
 
 final money = NumberFormat.currency(
   locale: 'en_PK',
