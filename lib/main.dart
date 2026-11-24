@@ -129,8 +129,7 @@ await d.execute('''
   )
 ''');
       },
-        
-      },
+      
       onUpgrade: (d, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           await d.execute(
