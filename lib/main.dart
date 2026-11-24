@@ -175,6 +175,31 @@ if (oldVersion < 3) {
     );
   }
 
+ Future<void> saveSetting(String key, String value) async {
+  await db!.insert(
+    'app_settings',
+    {
+      'key': key,
+      'value': value,
+    },
+    conflictAlgorithm: ConflictAlgorithm.replace,
+  );
+}
+
+Future<String?> getSetting(String key) async {
+  final result = await db!.query(
+    'app_settings',
+    columns: ['value'],
+    where: 'key = ?',
+    whereArgs: [key],
+    limit: 1,
+  );
+
+  if (result.isEmpty) return null;
+
+  return result.first['value'] as String;
+}
+  
   Future<List<Map<String, Object?>>> rows(String table) async {
     if (table == 'products') {
       return db!.query(
