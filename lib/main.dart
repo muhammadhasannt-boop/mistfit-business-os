@@ -104,10 +104,12 @@ class BusinessContext {
       // Network / connection-related I/O failure.
       await _loadCachedWorkspace(db, user.id);
     } on TimeoutException {
-      // Request timed out.
-      await _loadCachedWorkspace(db, user.id);
-    }
-  }
+  // Request timed out.
+  await _loadCachedWorkspace(db, user.id);
+} on http.ClientException {
+  // Network connection failed.
+  await _loadCachedWorkspace(db, user.id);
+}
 
   static Future<void> _loadCachedWorkspace(
     AppDb db,
