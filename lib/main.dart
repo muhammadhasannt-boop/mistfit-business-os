@@ -27,34 +27,105 @@ class BusinessContext {
   static String? businessName;
 
   static Future<void> load() async {
-    final user = supabase.auth.currentUser;
+    final user = Supabase.instance.client.auth.currentUser;
 
     if (user == null) {
-      throw Exception('User login nahi hai.');
+      throw Exception(
+        'Login required. Please sign in to continue.',
+      );
     }
 
-    final membership = await supabase
-        .from('business_members')
-        .select('business_id')
-        .eq('user_id', user.id)
-        .maybeSingle();
+    final db = AppDb.instance;
 
-    if (membership == null) {
-      throw Exception('MISTFIT workspace membership nahi mili.');
+    try {
+      // 1. Get user's workspace membership from Supabase.
+      final membership = await Supabase.instance.client
+          .from('business_members')
+          .select('business_id')
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+      if (membership == null ||
+          membership['business_id'] == null) {
+        throw Exception(
+          'No business workspace is linked to this account.',
+        );
+      }
+
+      final remoteBusinessId =
+          membership['business_id'].toString();
+
+      // 2. Get business details.
+      final business = await Supabase.instance.client
+          .from('businesses')
+          .select('id, name')
+          .eq('id', remoteBusinessId)
+          .maybeSingle();
+
+      if (business == null ||
+          business['id'] == null ||
+          business['name'] == null) {
+        throw Exception(
+          'Business workspace details were not found.',
+        );
+      }
+
+      final remoteBusinessName =
+          business['name'].toString();
+
+      // 3. Save workspace details locally.
+      await db.saveSetting(
+        'business_id',
+        remoteBusinessId,
+      );
+
+      await db.saveSetting(
+        'business_name',
+        remoteBusinessName,
+      );
+
+      await db.saveSetting(
+        'business_user_id',
+        user.id,
+      );
+
+      // 4. Update active workspace.
+      businessId = remoteBusinessId;
+      businessName = remoteBusinessName;
+    } on PostgrestException {
+      // Do not use cached workspace when Supabase
+      // reports a database or permission error.
+      rethrow;
+    } catch (error) {
+      // 5. If online loading fails, try local cache.
+      final cachedUserId =
+          await db.getSetting('business_user_id');
+
+      final cachedBusinessId =
+          await db.getSetting('business_id');
+
+      final cachedBusinessName =
+          await db.getSetting('business_name');
+
+      // Never load another account's cached workspace.
+      if (cachedUserId != user.id ||
+          cachedBusinessId == null ||
+          cachedBusinessId.isEmpty ||
+          cachedBusinessName == null ||
+          cachedBusinessName.isEmpty) {
+        throw Exception(
+          'Workspace could not be loaded. '
+          'Please connect to the internet and try again. '
+          'Details: $error',
+        );
+      }
+
+      businessId = cachedBusinessId;
+      businessName = cachedBusinessName;
     }
-
-    final id = membership['business_id'] as String;
-
-    final business = await supabase
-        .from('businesses')
-        .select('id, name')
-        .eq('id', id)
-        .single();
-
-    businessId = business['id'] as String;
-    businessName = business['name'] as String;
   }
 }
+
 
 final money = NumberFormat.currency(
   locale: 'en_PK',
