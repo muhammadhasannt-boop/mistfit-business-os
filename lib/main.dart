@@ -1894,7 +1894,7 @@ class AnalystPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => FutureBuilder(
-    future: Future.wait([
+    future: Future.wait<Object>([
       AppDb.instance.totals(),
       AppDb.instance.rows('products'),
       AppDb.instance.rows('sales'),
