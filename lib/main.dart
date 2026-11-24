@@ -92,6 +92,8 @@ class BusinessContext {
       // 4. Update active workspace.
       businessId = remoteBusinessId;
       businessName = remoteBusinessName;
+          } on StateError {
+      rethrow;
     } on PostgrestException {
       // Do not use cached workspace when Supabase
       // reports a database or permission error.
