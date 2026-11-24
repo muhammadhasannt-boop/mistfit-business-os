@@ -65,7 +65,7 @@ class BusinessContext {
       if (business == null ||
           business['id'] == null ||
           business['name'] == null) {
-        throw Exception(
+        throw StateError(
           'Business workspace details were not found.',
         );
       }
