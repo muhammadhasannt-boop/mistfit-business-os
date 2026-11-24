@@ -47,7 +47,7 @@ class BusinessContext {
 
       if (membership == null ||
           membership['business_id'] == null) {
-        throw Exception(
+       throw StateError(
           'No business workspace is linked to this account.',
         );
       }
