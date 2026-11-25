@@ -522,29 +522,101 @@ class AppDb {
     );
   }
 
+  
   Future<int> saveProduct(
     Map<String, Object?> values, {
     int? id,
   }) async {
-    final now = DateTime.now().toIso8601String();
+    final database = db!;
 
-    final data = <String, Object?>{
-      ...values,
-      'sync_status': 'pending',
-      'updated_at': now,
-    };
+    final name = (values['name'] ?? '').toString().trim();
+    final sku = (values['sku'] ?? '').toString().trim();
+    final size = (values['size'] ?? '').toString().trim();
+    final color = (values['color'] ?? '').toString().trim();
 
-    if (id == null) {
-      data['created_at'] = now;
-      return db!.insert('products', data);
+    final cost = (values['cost'] as num?)?.toDouble();
+    final price = (values['price'] as num?)?.toDouble();
+    final stock = (values['stock'] as num?)?.toInt();
+
+    if (name.isEmpty) {
+      throw Exception('Product name zaroori hai.');
     }
 
-    return db!.update(
-      'products',
-      data,
-      where: 'id=?',
-      whereArgs: [id],
-    );
+    if (sku.isEmpty) {
+      throw Exception('SKU zaroori hai.');
+    }
+
+    if (size.isEmpty || color.isEmpty) {
+      throw Exception('Size aur color dono zaroori hain.');
+    }
+
+    if (cost == null || price == null || stock == null ||
+        cost < 0 || price < 0 || stock < 0) {
+      throw Exception('Price, cost ya stock ki value valid nahi.');
+    }
+
+    if (price < cost) {
+      throw Exception(
+        'Selling price cost se kam nahi ho sakti.',
+      );
+    }
+
+    return database.transaction<int>((txn) async {
+      // Case-insensitive SKU check.
+      // Spaces at the start/end are ignored.
+      final duplicate = await txn.query(
+        'products',
+        columns: ['id'],
+        where: '''
+          LOWER(TRIM(COALESCE(sku, ''))) = LOWER(TRIM(?))
+          AND (? IS NULL OR id != ?)
+        ''',
+        whereArgs: [sku, id, id],
+        limit: 1,
+      );
+
+      if (duplicate.isNotEmpty) {
+        throw Exception(
+          'Ye SKU pehle se kisi product ke paas hai. '
+          'Har variant ka unique SKU rakhein.',
+        );
+      }
+
+      final now = DateTime.now().toIso8601String();
+
+      final data = <String, Object?>{
+        ...values,
+        'name': name,
+        'sku': sku,
+        'size': size,
+        'color': color,
+        'cost': cost,
+        'price': price,
+        'stock': stock,
+        'sync_status': 'pending',
+        'updated_at': now,
+      };
+
+      if (id == null) {
+        data['created_at'] = now;
+        return txn.insert('products', data);
+      }
+
+      final updated = await txn.update(
+        'products',
+        data,
+        where: 'id = ? AND is_deleted = 0',
+        whereArgs: [id],
+      );
+
+      if (updated != 1) {
+        throw Exception(
+          'Product update nahi hua. Dobara try karein.',
+        );
+      }
+
+      return updated;
+    });
   }
 
   Future<void> recordSale(
