@@ -150,6 +150,7 @@ final money = NumberFormat.currency(
 
 // DATABASE
 
+
 class AppDb {
   AppDb._();
 
@@ -165,8 +166,30 @@ class AppDb {
 
     db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
+
+      onConfigure: (d) async {
+        await d.execute('PRAGMA foreign_keys = ON');
+      },
+
       onCreate: (d, v) async {
+        // PARENT PRODUCTS
+
+        await d.execute('''
+          CREATE TABLE product_groups(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL,
+            cloud_id TEXT,
+            sync_status TEXT NOT NULL DEFAULT 'pending',
+            updated_at TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0
+          )
+        ''');
+
+        // VARIANTS
+
         await d.execute('''
           CREATE TABLE products(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -181,9 +204,51 @@ class AppDb {
             cloud_id TEXT,
             sync_status TEXT NOT NULL DEFAULT 'pending',
             updated_at TEXT,
-            is_deleted INTEGER NOT NULL DEFAULT 0
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            product_group_id INTEGER,
+            FOREIGN KEY(product_group_id)
+              REFERENCES product_groups(id)
+              ON DELETE RESTRICT
           )
         ''');
+
+        // PARENT PRODUCT PHOTOS
+
+        await d.execute('''
+          CREATE TABLE product_group_images(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_group_id INTEGER NOT NULL,
+            local_path TEXT NOT NULL,
+            image_path TEXT,
+            cloud_id TEXT,
+            created_at TEXT NOT NULL,
+            sync_status TEXT NOT NULL DEFAULT 'pending',
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(product_group_id)
+              REFERENCES product_groups(id)
+              ON DELETE CASCADE
+          )
+        ''');
+
+        // VARIANT PHOTOS
+
+        await d.execute('''
+          CREATE TABLE product_images(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            local_path TEXT NOT NULL,
+            image_path TEXT,
+            cloud_id TEXT,
+            created_at TEXT NOT NULL,
+            sync_status TEXT NOT NULL DEFAULT 'pending',
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(product_id)
+              REFERENCES products(id)
+              ON DELETE CASCADE
+          )
+        ''');
+
+        // SALES
 
         await d.execute('''
           CREATE TABLE sales(
@@ -198,6 +263,8 @@ class AppDb {
           )
         ''');
 
+        // EXPENSES
+
         await d.execute('''
           CREATE TABLE expenses(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,15 +275,37 @@ class AppDb {
           )
         ''');
 
-await d.execute('''
-  CREATE TABLE app_settings(
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  )
-''');
+        // APP SETTINGS
+
+        await d.execute('''
+          CREATE TABLE app_settings(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+          )
+        ''');
+
+        // INDEXES
+
+        await d.execute('''
+          CREATE INDEX products_product_group_idx
+          ON products(product_group_id)
+        ''');
+
+        await d.execute('''
+          CREATE INDEX product_group_images_group_idx
+          ON product_group_images(product_group_id)
+        ''');
+
+        await d.execute('''
+          CREATE INDEX product_images_product_idx
+          ON product_images(product_id)
+        ''');
       },
-      
+
       onUpgrade: (d, oldVersion, newVersion) async {
+
+        // VERSION 1 -> 2
+
         if (oldVersion < 2) {
           await d.execute(
             'ALTER TABLE products ADD COLUMN cloud_id TEXT',
@@ -224,7 +313,8 @@ await d.execute('''
 
           await d.execute('''
             ALTER TABLE products
-            ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending'
+            ADD COLUMN sync_status TEXT
+            NOT NULL DEFAULT 'pending'
           ''');
 
           await d.execute(
@@ -233,48 +323,133 @@ await d.execute('''
 
           await d.execute('''
             ALTER TABLE products
-            ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0
+            ADD COLUMN is_deleted INTEGER
+            NOT NULL DEFAULT 0
           ''');
         }
 
-if (oldVersion < 3) {
-  await d.execute('''
-    CREATE TABLE IF NOT EXISTS app_settings(
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    )
-  ''');
-}
-        
+        // VERSION 2 -> 3
+
+        if (oldVersion < 3) {
+          await d.execute('''
+            CREATE TABLE IF NOT EXISTS app_settings(
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            )
+          ''');
+        }
+
+        // VERSION 3 -> 4
+
+        if (oldVersion < 4) {
+
+          // Parent products
+
+          await d.execute('''
+            CREATE TABLE product_groups(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              description TEXT,
+              created_at TEXT NOT NULL,
+              cloud_id TEXT,
+              sync_status TEXT NOT NULL DEFAULT 'pending',
+              updated_at TEXT,
+              is_deleted INTEGER NOT NULL DEFAULT 0
+            )
+          ''');
+
+          // Existing products remain unchanged.
+          // New relationship is nullable.
+
+          await d.execute('''
+            ALTER TABLE products
+            ADD COLUMN product_group_id INTEGER
+            REFERENCES product_groups(id)
+            ON DELETE RESTRICT
+          ''');
+
+          // Parent photos
+
+          await d.execute('''
+            CREATE TABLE product_group_images(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              product_group_id INTEGER NOT NULL,
+              local_path TEXT NOT NULL,
+              image_path TEXT,
+              cloud_id TEXT,
+              created_at TEXT NOT NULL,
+              sync_status TEXT NOT NULL DEFAULT 'pending',
+              is_deleted INTEGER NOT NULL DEFAULT 0,
+              FOREIGN KEY(product_group_id)
+                REFERENCES product_groups(id)
+                ON DELETE CASCADE
+            )
+          ''');
+
+          // Variant photos
+
+          await d.execute('''
+            CREATE TABLE product_images(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              product_id INTEGER NOT NULL,
+              local_path TEXT NOT NULL,
+              image_path TEXT,
+              cloud_id TEXT,
+              created_at TEXT NOT NULL,
+              sync_status TEXT NOT NULL DEFAULT 'pending',
+              is_deleted INTEGER NOT NULL DEFAULT 0,
+              FOREIGN KEY(product_id)
+                REFERENCES products(id)
+                ON DELETE CASCADE
+            )
+          ''');
+
+          // Indexes
+
+          await d.execute('''
+            CREATE INDEX products_product_group_idx
+            ON products(product_group_id)
+          ''');
+
+          await d.execute('''
+            CREATE INDEX product_group_images_group_idx
+            ON product_group_images(product_group_id)
+          ''');
+
+          await d.execute('''
+            CREATE INDEX product_images_product_idx
+            ON product_images(product_id)
+          ''');
+        }
       },
     );
   }
 
- Future<void> saveSetting(String key, String value) async {
-  await db!.insert(
-    'app_settings',
-    {
-      'key': key,
-      'value': value,
-    },
-    conflictAlgorithm: ConflictAlgorithm.replace,
-  );
-}
+  Future<void> saveSetting(String key, String value) async {
+    await db!.insert(
+      'app_settings',
+      {
+        'key': key,
+        'value': value,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
 
-Future<String?> getSetting(String key) async {
-  final result = await db!.query(
-    'app_settings',
-    columns: ['value'],
-    where: 'key = ?',
-    whereArgs: [key],
-    limit: 1,
-  );
+  Future<String?> getSetting(String key) async {
+    final result = await db!.query(
+      'app_settings',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
 
-  if (result.isEmpty) return null;
+    if (result.isEmpty) return null;
 
-  return result.first['value'] as String;
-}
-  
+    return result.first['value'] as String;
+  }
+
   Future<List<Map<String, Object?>>> rows(String table) async {
     if (table == 'products') {
       return db!.query(
@@ -373,70 +548,73 @@ Future<String?> getSetting(String key) async {
   }
 
   Future<void> recordSale(
-  Map<String, Object?> product,
-  int qty,
-) async {
-  await db!.transaction((txn) async {
-    final id = product['id'] as int;
+    Map<String, Object?> product,
+    int qty,
+  ) async {
+    await db!.transaction((txn) async {
+      final id = product['id'] as int;
 
-    if (qty <= 0) {
-      throw Exception('Quantity valid nahi hai.');
-    }
+      if (qty <= 0) {
+        throw Exception('Quantity valid nahi hai.');
+      }
 
-    // Transaction ke andar product ka fresh record lo.
-    final results = await txn.query(
-      'products',
-      where: 'id = ?',
-      whereArgs: [id],
-      limit: 1,
-    );
+      final results = await txn.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
 
-    if (results.isEmpty) {
-      throw Exception('Product ab available nahi hai.');
-    }
+      if (results.isEmpty) {
+        throw Exception('Product ab available nahi hai.');
+      }
 
-    final freshProduct = results.first;
+      final freshProduct = results.first;
 
-    if (freshProduct['is_deleted'] == 1) {
-      throw Exception('Ye product delete ho chuka hai.');
-    }
+      if (freshProduct['is_deleted'] == 1) {
+        throw Exception('Ye product delete ho chuka hai.');
+      }
 
-    final stock = (freshProduct['stock'] as num).toInt();
+      final stock = (freshProduct['stock'] as num).toInt();
 
-    if (qty > stock) {
-      throw Exception('Stock available nahi hai. Available stock: $stock');
-    }
+      if (qty > stock) {
+        throw Exception(
+          'Stock available nahi hai. Available stock: $stock',
+        );
+      }
 
-    final price = (freshProduct['price'] as num).toDouble();
-    final cost = (freshProduct['cost'] as num).toDouble();
-    final now = DateTime.now().toIso8601String();
+      final price = (freshProduct['price'] as num).toDouble();
+      final cost = (freshProduct['cost'] as num).toDouble();
+      final now = DateTime.now().toIso8601String();
 
-    await txn.insert('sales', {
-      'product_id': id,
-      'product_name': freshProduct['name'],
-      'qty': qty,
-      'unit_price': price,
-      'unit_cost': cost,
-      'total': price * qty,
-      'date': now,
+      await txn.insert('sales', {
+        'product_id': id,
+        'product_name': freshProduct['name'],
+        'qty': qty,
+        'unit_price': price,
+        'unit_cost': cost,
+        'total': price * qty,
+        'date': now,
+      });
+
+      final updatedRows = await txn.update(
+        'products',
+        {
+          'stock': stock - qty,
+          'sync_status': 'pending',
+          'updated_at': now,
+        },
+        where: 'id = ? AND stock = ? AND is_deleted = 0',
+        whereArgs: [id, stock],
+      );
+
+      if (updatedRows != 1) {
+        throw Exception(
+          'Stock update nahi ho saka. Dobara try karo.',
+        );
+      }
     });
-
-    final updatedRows = await txn.update(
-      'products',
-      {
-        'stock': stock - qty,
-        'sync_status': 'pending',
-        'updated_at': now,
-      },
-      where: 'id = ? AND stock = ? AND is_deleted = 0',
-      whereArgs: [id, stock],
-    );
-
-    if (updatedRows != 1) {
-      throw Exception('Stock update nahi ho saka. Dobara try karo.');
-    }
-  });
-}
+  }
 
   Future<Map<String, double>> totals() async {
     final s = await db!.rawQuery(
@@ -461,6 +639,7 @@ Future<String?> getSetting(String key) async {
     };
   }
 }
+
 
 // PRODUCTS CLOUD SYNC
 
