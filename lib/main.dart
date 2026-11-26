@@ -2016,6 +2016,7 @@ class ProductsPage extends StatelessWidget {
   );
 }
 
+
 Future<void> showProductForm(
   BuildContext context, {
   Map<String, Object?>? existing,
@@ -2048,87 +2049,189 @@ Future<void> showProductForm(
     text: existing == null ? '0' : '${existing['stock']}',
   );
 
+  bool isSaving = false;
+  bool saved = false;
+  String? formError;
+
   await showDialog(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text(existing == null ? 'Add product' : 'Edit product'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            field(name, 'Product name'),
-            field(sku, 'SKU / code'),
-            field(size, 'Size (S, M, L, XL)'),
-            field(color, 'Color'),
-            field(cost, 'Unit cost (Rs.)', numeric: true),
-            field(price, 'Selling price (Rs.)', numeric: true),
-            field(stock, 'Opening stock', numeric: true),
-          ],
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AlertDialog(
+        title: Text(
+          existing == null ? 'Add product' : 'Edit product',
         ),
-      ),
-      actions: [
-        if (existing != null)
-          TextButton(
-            onPressed: () async {
-              await AppDb.instance.delete(
-                'products',
-                existing['id'] as int,
-              );
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              field(name, 'Product name'),
+              field(sku, 'SKU / code'),
+              field(size, 'Size (S, M, L, XL)'),
+              field(color, 'Color'),
+              field(cost, 'Unit cost (Rs.)', numeric: true),
+              field(price, 'Selling price (Rs.)', numeric: true),
+              field(stock, 'Opening stock', numeric: true),
 
-              try {
-                await ProductSyncService.instance.syncProducts();
-              } catch (_) {}
-
-              if (ctx.mounted) Navigator.pop(ctx);
-            },
-            child: const Text('Delete'),
+              if (formError != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.redAccent.withOpacity(0.5),
+                    ),
+                  ),
+                  child: Text(
+                    formError!,
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('Cancel'),
         ),
-        FilledButton(
-          onPressed: () async {
-            final n = double.tryParse(cost.text);
-            final pr = double.tryParse(price.text);
-            final st = int.tryParse(stock.text);
+        actions: [
+          if (existing != null)
+            TextButton(
+              onPressed: isSaving
+                  ? null
+                  : () async {
+                      try {
+                        await AppDb.instance.delete(
+                          'products',
+                          existing['id'] as int,
+                        );
 
-            if (name.text.trim().isEmpty ||
-                n == null ||
-                pr == null ||
-                st == null ||
-                n < 0 ||
-                pr < 0 ||
-                st < 0) {
-              return;
-            }
+                        if (ctx.mounted) {
+                          Navigator.pop(ctx);
+                        }
 
-            final values = <String, Object?>{
-              'name': name.text.trim(),
-              'sku': sku.text.trim(),
-              'size': size.text.trim(),
-              'color': color.text.trim(),
-              'cost': n,
-              'price': pr,
-              'stock': st,
-            };
+                        unawaited(() async {
+                          try {
+                            await ProductSyncService.instance
+                                .syncProducts();
+                          } catch (_) {}
+                        }());
+                      } catch (e) {
+                        setDialogState(() {
+                          formError = e.toString().replaceFirst(
+                            'Exception: ',
+                            '',
+                          );
+                        });
+                      }
+                    },
+              child: const Text('Delete'),
+            ),
 
-            await AppDb.instance.saveProduct(
-              values,
-              id: existing?['id'] as int?,
-            );
+          TextButton(
+            onPressed: isSaving
+                ? null
+                : () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
 
-            try {
-              await ProductSyncService.instance.syncProducts();
-            } catch (_) {
-              // Local save remains safe if cloud is unavailable.
-            }
+          FilledButton(
+            onPressed: isSaving
+                ? null
+                : () async {
+                    setDialogState(() {
+                      isSaving = true;
+                      formError = null;
+                    });
 
-            if (ctx.mounted) Navigator.pop(ctx);
-          },
-          child: const Text('Save'),
-        ),
-      ],
+                    try {
+                      final n = double.tryParse(cost.text);
+                      final pr = double.tryParse(price.text);
+                      final st = int.tryParse(stock.text);
+
+                      if (name.text.trim().isEmpty) {
+                        throw Exception(
+                          'Product name zaroori hai.',
+                        );
+                      }
+
+                      if (sku.text.trim().isEmpty) {
+                        throw Exception('SKU zaroori hai.');
+                      }
+
+                      if (size.text.trim().isEmpty ||
+                          color.text.trim().isEmpty) {
+                        throw Exception(
+                          'Size aur color dono zaroori hain.',
+                        );
+                      }
+
+                      if (n == null ||
+                          pr == null ||
+                          st == null ||
+                          n < 0 ||
+                          pr < 0 ||
+                          st < 0) {
+                        throw Exception(
+                          'Cost, price aur stock ki valid value enter karein.',
+                        );
+                      }
+
+                      if (pr < n) {
+                        throw Exception(
+                          'Selling price cost se kam nahi ho sakti.',
+                        );
+                      }
+
+                      final values = <String, Object?>{
+                        'name': name.text.trim(),
+                        'sku': sku.text.trim(),
+                        'size': size.text.trim(),
+                        'color': color.text.trim(),
+                        'cost': n,
+                        'price': pr,
+                        'stock': st,
+                      };
+
+                      await AppDb.instance.saveProduct(
+                        values,
+                        id: existing?['id'] as int?,
+                      );
+
+                      saved = true;
+
+                      if (ctx.mounted) {
+                        Navigator.pop(ctx);
+                      }
+                    } catch (e) {
+                      setDialogState(() {
+                        formError = e.toString().replaceFirst(
+                          'Exception: ',
+                          '',
+                        );
+                      });
+                    } finally {
+                      if (ctx.mounted) {
+                        setDialogState(() {
+                          isSaving = false;
+                        });
+                      }
+                    }
+                  },
+            child: isSaving
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                    ),
+                  )
+                : const Text('Save'),
+          ),
+        ],
+      ),
     ),
   );
 
@@ -2139,6 +2242,18 @@ Future<void> showProductForm(
   cost.dispose();
   price.dispose();
   stock.dispose();
+
+  // Save local data first. Cloud sync runs separately,
+  // so a slow connection cannot keep the form waiting.
+  if (saved) {
+    unawaited(() async {
+      try {
+        await ProductSyncService.instance.syncProducts();
+      } catch (_) {
+        // Local product remains saved and pending for sync.
+      }
+    }());
+  }
 }
 
 Widget field(
