@@ -423,6 +423,25 @@ class AppDb {
         }
       },
     );
+        // Create normalized SKU index only when existing
+    // records do not contain duplicate non-empty SKUs.
+    final duplicateSkus = await db!.rawQuery('''
+      SELECT LOWER(TRIM(sku)) AS normalized_sku
+      FROM products
+      WHERE sku IS NOT NULL
+        AND TRIM(sku) <> ''
+      GROUP BY LOWER(TRIM(sku))
+      HAVING COUNT(*) > 1
+    ''');
+
+    if (duplicateSkus.isEmpty) {
+      await db!.execute('''
+        CREATE UNIQUE INDEX IF NOT EXISTS
+        products_sku_normalized_unique_idx
+        ON products(LOWER(TRIM(sku)))
+        WHERE sku IS NOT NULL AND TRIM(sku) <> ''
+      ''');
+    }
   }
 
   Future<void> saveSetting(String key, String value) async {
